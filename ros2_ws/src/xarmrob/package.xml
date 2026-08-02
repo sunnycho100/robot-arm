@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>xarmrob</name>
+  <version>0.0.0</version>
+  <description>Code for the robot arm package "xarmrob" used in the University of Wisconsin-Madison course ME/ECE 439</description>
+  <maintainer email="peter.adamczyk@wisc.edu">PeterAdamczyk</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>xarmrob_interfaces</depend>
+  <depend>example_interfaces</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>ros2launch</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,133 @@
+<?xml version="1.0"?>
+<robot name="visual">
+
+
+<material name="blue">
+    <color rgba="0 0 0.8 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="white">
+    <color rgba="1 1 1 1"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <cylinder length="0.001" radius="0.055"/>
+      </geometry>
+    </visual>
+    <origin rpy="0 0 0" xyz="0 0 .1026"/>
+  </link>
+
+  <link name="trunk">
+    <visual>
+      <geometry>
+      <cylinder length="0.1026" radius=".0310"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 .0513"/>
+      <material name="white"/>
+    </visual>
+  </link>
+
+
+  <joint name="base_joint" type="revolute">
+    <axis xyz=" 0 0 1"/>
+    <parent link="base_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <limit effort="1000.0" lower="-1.7453" upper="1.7453" velocity=".5"/>
+    <child link="trunk"/>
+  </joint>
+
+  <link name="upper_arm">
+    <visual>
+      <geometry>
+    <cylinder length="0.1180" radius="0.025"/>
+      </geometry>
+      <origin rpy="0 1.570796 0" xyz=".059 0 0"/>
+      <material name="white"/>
+    </visual>
+  </link>
+
+  <joint name="shoulder_joint" type="revolute">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz="0.031 0 .1026"/>
+    <limit effort="1000.0" lower="-2.7925268032" upper="-0.3490658504" velocity=".5"/>
+    <parent link="trunk"/>
+    <child link="upper_arm"/>
+  </joint>
+
+  <link name="forearm">
+    <visual>
+      <geometry>
+    <cylinder length="0.001" radius="0.025"/>
+      </geometry>
+      <origin rpy="0 1.570796 0" xyz="0 0 .02"/>
+      <material name="white"/>
+    </visual>
+  </link>
+
+  <joint name="elbow_joint" type="revolute">
+    <axis xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz=".1180 0 0"/>
+    <limit effort="1000.0" lower="1.04719755" upper="2.61799388" velocity=".5"/>
+    <parent link="upper_arm"/>
+    <child link="forearm"/>
+  </joint>
+
+  <link name="wrist">
+    <visual>
+      <geometry>
+    <cylinder length=".1335" radius="0.025"/>
+      </geometry>
+      <origin rpy="0 1.570796 0" xyz="0.06675 0 0 "/>
+      <material name="white"/>
+    </visual>
+  </link>
+
+  <joint name="forearm_joint" type="revolute">
+    <axis rpy="0 0 1" xyz="1 0 0"/>
+    <origin rpy="0 0 0" xyz="0 0 .02"/>
+    <limit effort="1000.0" lower="-1.5707963268" upper="1.5707963268" velocity=".5"/>
+    <parent link="forearm"/>
+    <child link="wrist"/>
+  </joint>
+
+  <link name="hand">
+    <visual>
+      <geometry>
+    <cylinder length="0.029" radius="0.025"/>
+      </geometry>
+      <origin rpy="0 1.570796 0" xyz="0.0145 0 0"/>
+      <material name="white"/>
+    </visual>
+  </link>
+
+  <joint name="wrist_joint" type="revolute">
+    <axis rpy="0 0 1" xyz="0 1 0"/>
+    <origin rpy="0 0 0" xyz=".1335 0 0"/>
+    <limit effort="1000.0" lower="-1.5707963268" upper="1.5707963268" velocity=".5"/>
+    <parent link="wrist"/>
+    <child link="hand"/>
+  </joint>
+
+  <link name="fingers">
+    <visual>
+      <geometry>
+    <cylinder length="0.1" radius="0.008"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz=".008 0 .015"/>
+      <material name="white"/>
+    </visual>
+  </link>  
+
+  <joint name="fingers_joint" type="revolute">
+    <axis rpy="0 0 1" xyz="1 0 0"/>
+    <origin rpy="0 0 0" xyz=".025 0 0"/>
+    <limit effort="1000.0" lower="-1.5707963268" upper="1.5707963268" velocity=".5"/>
+    <parent link="hand"/>
+    <child link="fingers"/>
+  </joint>
+
+  </robot>

@@ -1,0 +1,56 @@
+/**:  # This can be used to set parameters in any namespace, any node. 
+# command_xarm:  # This is used for a single node. 
+  ros__parameters:
+    # Parameters for ME439 Robot (Hiwonder xArm 1S) using RRRRRR structure with zyyxyx rotations (x forward, y left, z up)
+    # Frequency to compute new commands (Hz) 
+    command_frequency: 5
+    # Indices and ID numbers of the Hiwonder Bus Servos, from base to tip
+    bus_servo_indices_base_to_tip: [0,1,2,3,4,5,6]  # increasing order from ground to endpoint. The last one is the Gripper. 
+    bus_servo_IDs_base_to_tip: [6,5,4,7,3,2,1] # Servo ID is programmed into the servo itself and is usually written on it. Register your ID numbers here. 
+    bus_servo_neutral_cmds_base_to_tip: [500,500,500,500,500,500,90]  # commands for returning to neutral. 
+    joint_neutral_angs_base_to_tip: [0., -1.5707, 1.5707, 0., 0., 0., 0.]   # angles for returning to neutral. Here in Radians
+    
+    # Rotational Axis limits (degrees)
+    rotational_limits_joint_01: [-150,150]
+    rotational_limits_joint_12: [-180,0]
+    rotational_limits_joint_23: [0,180]
+    rotational_limits_joint_34: [-110,110]
+    rotational_limits_joint_45: [-100,100]
+    rotational_limits_joint_56: [-110,111]
+    gripper_limits: [0,90] # Gripper Opening Limits (deg) - 0 deg is open, 90 deg is closed. 
+    # Rotational Axis degrees-to-commands mapping
+    # (commands range 0 to 1000)
+    rotational_angles_for_mapping_joint_01: [-90,0,90]
+    bus_servo_cmd_for_mapping_joint_01: [120, 500, 880]
+    rotational_angles_for_mapping_joint_12: [-180,-90,0]
+    bus_servo_cmd_for_mapping_joint_12: [870,500,120]
+    rotational_angles_for_mapping_joint_23: [0,90,180]
+    bus_servo_cmd_for_mapping_joint_23: [140,500,880]
+    rotational_angles_for_mapping_joint_34: [-112,-90,0,90,112]
+    bus_servo_cmd_for_mapping_joint_34: [1000,890,505,140,0]
+    rotational_angles_for_mapping_joint_45: [-112,-90,0,90,112]
+    bus_servo_cmd_for_mapping_joint_45: [0,120,490,880,1000]
+    rotational_angles_for_mapping_joint_56: [-112,-90,0,90,112]
+    bus_servo_cmd_for_mapping_joint_56: [0,120,500,880,1000]
+    rotational_angles_for_mapping_gripper: [0, 90]
+    bus_servo_cmd_for_mapping_gripper: [90,610]
+
+# # Kinematic parameters. Some for Inverse Kinematics only, others for Forward Kinematics also.
+# /**:
+  # ros__parameters:
+    # Speed for controlled movement
+    endpoint_speed: 0.05
+    # Height offset (for safety: do dry runs in the air: suggest 0.02 m up)
+    vertical_offset: 0.02
+    # Sign of positive rotations w.r.t. the +y axis
+    y_rotation_sign: 1 # Could otherwise be -1 if using 'positive rotations about the -y axis'
+    # Frame offsets to successive links (units: m)
+    frame_offset_01: [0., 0., 0.074]
+    frame_offset_12: [0.010, 0., 0.]
+    frame_offset_23: [0.101, 0., 0.]
+    frame_offset_34: [0.0627, 0., 0.0758]
+    frame_offset_45: [0., 0., 0.]
+    frame_offset_56: [0., 0., 0.]    # Define the Frame 6 ('fingers') origin to coincide with the 3-4 and 4-5 axes ("spherical wrist").
+    # Location of the end effector centerpoint relative to the wrist center
+    endpoint_offset_in_frame_6: [0.133, 0., -0.003]  # forward from 'wrist' to center of gripper (when Gripper is OPEN)
+    gripper_arm_length: 0.030  # length of the gripper arm - controls change of endpoint position when open vs. closed (and anything in between). 

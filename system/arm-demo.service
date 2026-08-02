@@ -1,0 +1,11 @@
+[Unit]
+Description=Arm demo on boot when armed by flag file
+After=multi-user.target
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+SupplementaryGroups=plugdev
+ExecStart=/usr/local/bin/armdemo.sh
+[Install]
+WantedBy=multi-user.target

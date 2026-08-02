@@ -1,0 +1,10 @@
+# This is a Service Request that holds data to describe the desired joint angles (radians)
+float32[] joint_angles
+
+---
+# This is a Service Response that holds data to describe the nearest viable joint state (radians), predicted endpoint, and whether it was modified from the request. 
+
+float32[] joint_angles
+float32[] endpoint
+bool modified 0
+

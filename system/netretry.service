@@ -1,0 +1,6 @@
+[Unit]
+Description=Retry known wifi networks
+After=NetworkManager.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/netretry.sh

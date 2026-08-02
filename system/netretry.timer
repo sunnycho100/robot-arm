@@ -1,0 +1,7 @@
+[Unit]
+Description=Retry known wifi networks every 30s
+[Timer]
+OnBootSec=20
+OnUnitActiveSec=30
+[Install]
+WantedBy=timers.target

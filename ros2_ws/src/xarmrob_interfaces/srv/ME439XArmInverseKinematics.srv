@@ -1,0 +1,11 @@
+# This is a Service Request that holds data to describe the desired endpoint (meters). An absolute end effector pose is allowed for the inverse kinematics algorithm to use (a 3x3 array serialized).
+float32[] endpoint
+float32[] effector_pose [0.,0.,0.,0.,0.,0.,0.,0.,0.]
+
+---
+# This is a Service Response that holds data to describe the joint angles (radians), predicted endpoint, and whether it was modified from the request. 
+
+float32[] joint_angles
+float32[] endpoint
+bool modified 0
+
