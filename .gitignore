@@ -9,3 +9,8 @@ __pycache__/
 
 # never commit network profiles: they contain the NetID password
 *.nmconnection
+
+# personal references and decision notes, never publish
+docs/
+personal-notes.md
+sim/.venv/

@@ -106,3 +106,40 @@ cd ~/ros2_ws && colcon build --symlink-install
 `arm-demo.service` runs the demo at boot but only when armed by a flag file
 (`~/DEMO_ALWAYS` or `~/DEMO_ON_BOOT`). Leave it unarmed: armed, the arm moves 45
 seconds after **every** power-on, which is a hazard if anyone else plugs the Pi in.
+
+## Centring on the knob: uncalibrated visual servoing
+
+Bench data showed the grip fails from sideways error: 4 mm of lateral offset
+makes the knob eject from the jaws, while height barely matters. Taught poses
+kept missing by about that much, because a hobby arm does not return to a
+commanded position exactly.
+
+The fix is uncalibrated visual servoing (Piepmeier's thesis is the canonical
+source; Peter Corke's Robotics, Vision and Control covers it as image-based
+visual servoing). The idea: instead of calibrating the camera and the arm well
+enough to compute the right move in advance, close the loop in the image. The
+camera sees both the gripper and the knob in the same frame; the arm nudges
+itself until they line up. Calibration error stops mattering because every
+approach ends with the camera confirming alignment, not assuming it.
+
+The whole controller:
+
+1. Once, at the pre-grasp pose: jog the arm a small step in x, then y, and
+   measure how many pixels the gripper moved in the image. Those two
+   measurements form a 2x2 matrix J, the mm-to-pixel exchange rate.
+2. Loop: measure the pixel error e between gripper and knob, move the arm by
+   0.4 * inv(J) * e (capped per step), look again. Stop when the error is
+   under ~2 px or after 6 iterations. Typically converges in 3 to 5.
+
+The 0.4 damping factor means each step only cancels part of the error, which
+makes the loop converge even if J is off by 30 to 50 percent.
+
+Jog size is a tuning knob, default 5 mm. To be evaluated in simulation and
+again on the real arm: if 5 mm disturbs the scene or overshoots, drop to 3 mm
+or less; if the pixel displacement is too small to measure reliably against
+detection noise (about half a pixel), increase it. The right size is the
+smallest jog whose pixel displacement is clearly above noise.
+
+Why not classical hand-eye calibration (cv2.calibrateHandEye): it needs 15 to
+20 accurate end-effector poses, and this arm's positioning error would poison
+the result. The servoing loop sidesteps the problem entirely.
