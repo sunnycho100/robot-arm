@@ -14,3 +14,7 @@ __pycache__/
 docs/
 personal-notes.md
 sim/.venv/
+
+# model weights are downloaded on demand, never committed
+weights/
+*.pt
