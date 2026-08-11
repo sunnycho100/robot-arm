@@ -53,6 +53,30 @@ Z_FLOOR = 0.045     # MEASURE: from ~/z_floor.json on the Pi
 GRIPPER_BODY = 'link2'
 GRIPPER_MARKER = (0.00485, 0.0, 0.0828)
 
+# The URDF drives the gripper from ONE joint and declares the other three as
+# <mimic> joints of it. MuJoCo's URDF importer silently drops mimic tags and
+# gives those joints a zero range instead, so only a single distal finger
+# segment moved and the other three stayed frozen: the model was not closing a
+# gripper at all, it was swinging one finger aside. These are the multipliers
+# and offsets from the URDF, applied by hand in _apply_jaw.
+GRIPPER_MIMIC = {
+    'arm1':       (1.00,  0.0),      # the driven joint
+    'arm1_left':  (-1.00, 0.0),
+    'arm0':       (-1.01, -0.3),
+    'arm0_left':  (1.01,  0.3),
+}
+
+
+def set_jaw(data, jaw, model=None):
+    """Drive every finger joint from one jaw value, honouring the mimics."""
+    m = model or MODEL
+    for name, (mult, off) in GRIPPER_MIMIC.items():
+        try:
+            adr = m.joint(name).qposadr[0]
+        except KeyError:
+            continue
+        data.qpos[adr] = mult * float(jaw) + off
+
 
 def knob_targets():
     """Grip target (m) for each knob: centre of the cap, in the arm frame.
@@ -118,6 +142,11 @@ def reset():
 
 def build():
     spec = mujoco.MjSpec.from_file(str(HERE / 'xarm_1s_mj.urdf'))
+    # the importer gave the mimic joints a zero range, which pins them shut
+    for j in spec.joints:
+        if j.name in ('arm1_left', 'arm0', 'arm0_left'):
+            j.range = [-2.2, 2.2]
+            j.limited = 0
     spec.visual.global_.offwidth = 1280
     spec.visual.global_.offheight = 960
     w = spec.worldbody
@@ -201,28 +230,30 @@ def _owner(geom_name):
     return None
 
 
-def _pose(data, xyz, gripper_angle=None, jaw=None):
+def _pose(data, xyz, gripper_angle=None, jaw=None, wrist_roll=None):
     counts, achieved, clipped = ik.solve(xyz, gripper_angle)
     ang = ik.limit_joint_angles(ik.invkin(xyz, gripper_angle))
+    if wrist_roll is not None:
+        # gamma5, the wrist roll. Free at grip time: it decides which way the
+        # fingers reach, and the turn starts from wherever it is left.
+        ang[5] = float(wrist_roll)
     for name, q in urdfmap.qpos_from(ang).items():
         data.qpos[MODEL.joint(name).qposadr[0]] = q
     if jaw is not None:
-        for jn in ('arm1', 'arm1_left'):
-            try:
-                data.qpos[MODEL.joint(jn).qposadr[0]] = float(jaw)
-            except KeyError:
-                pass
+        set_jaw(data, jaw)
     mujoco.mj_forward(MODEL, data)
     return counts, achieved, clipped
 
 
-def grade(xyz, gripper_angle=None, target_knob=None, jaw=None):
+def grade(xyz, gripper_angle=None, target_knob=None, jaw=None,
+          graze_mm=0.0, wrist_roll=None):
     """jaw: finger angle in radians. It matters more than it sounds: with the
     jaws wide open the fingers splay out far enough to foul the knobs either
     side, so the same pose is a collision open and clear pre-closed."""
     data = mujoco.MjData(MODEL)
     try:
-        counts, achieved, clipped = _pose(data, xyz, gripper_angle, jaw)
+        counts, achieved, clipped = _pose(data, xyz, gripper_angle, jaw,
+                                          wrist_roll)
     except ValueError as e:
         return dict(reachable=False, why=str(e))
     hits = []
@@ -238,7 +269,10 @@ def grade(xyz, gripper_angle=None, target_knob=None, jaw=None):
         part = MODEL.body(MODEL.geom_bodyid[arm_geom]).name
         if target_knob and obj == target_knob:
             continue                        # touching the knob we are gripping
-        hits.append(f'{part} vs {obj} ({-c.dist*1000:.1f} mm in)')
+        depth = -c.dist * 1000
+        if depth < graze_mm:
+            continue      # shallower than the model's own geometric error
+        hits.append(f'{part} vs {obj} ({depth:.1f} mm in)')
     return dict(reachable=not clipped, achieved=np.round(achieved, 4),
                 above_floor=achieved[2] >= Z_FLOOR,
                 collisions=sorted(set(hits)), counts=[round(c) for c in counts])

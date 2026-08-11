@@ -295,6 +295,40 @@ def turn_by(deg, speed=200, linear=False):
     return move(target, speed=speed, linear=linear)
 
 
+# How narrow to make the jaws before lowering them between two knobs. This is
+# a COUNT, and it has to be found on the bench: simulation could only settle
+# the direction, not the number.
+#
+# What simulation established: with all four finger joints driven, the tips
+# splay from 28 mm apart at the closed end to 88 mm at the open end, while the
+# DS-1 knobs are 24 mm apart. Approaching with the jaws open therefore drives
+# the fingers 5 to 6 mm into BOTH neighbours. Descending nearly shut is the
+# only way through.
+#
+# What simulation could NOT establish: the actual count. Its fingers are too
+# long for a 14 mm knob standing on a pedal (there is no height where the jaws
+# are on the knob and clear of the pedal, which the real gripper manages), so
+# its millimetre clearances say nothing about this hardware.
+#
+# To calibrate: put the arm over the CENTRE knob at grip height, run
+#   python3 arm.py preclose <count>
+# from wide to narrow, and take the first count where the fingers pass between
+# the neighbours without touching them. Write it here.
+PRECLOSE = 470      # UNVERIFIED starting guess, between release (410) and CAP
+
+
+def preclose(to=PRECLOSE, speed=200):
+    """Narrow the jaws before descending between knobs, without gripping.
+
+    Not a grip: it moves to a fixed opening and returns, so nothing is being
+    held and no force is measured. squeeze() is what grips, afterwards.
+    """
+    t = read()
+    t[GRIP] = int(np.clip(to, 90, CAP))
+    print(f'pre-close jaws to {t[GRIP]} (was {read()[GRIP]})')
+    return move(t, speed=speed)
+
+
 def release(to=410, speed=200):
     """Open the gripper back to its resting width."""
     t = read()
@@ -406,6 +440,12 @@ def main():
 
     elif cmd == 'squeeze':
         squeeze(int(name) if name else 35)
+
+    elif cmd == 'preclose':
+        # Calibration aid: run this over the CENTRE knob at grip height,
+        # sweeping from wide to narrow, and keep the first count whose fingers
+        # pass between the neighbouring knobs without touching them.
+        preclose(int(name) if name else PRECLOSE)
 
     elif cmd == 'floor':
         # Teach the lowest allowed height by putting the arm there, rather than

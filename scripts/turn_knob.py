@@ -41,6 +41,7 @@ import numpy as np
 import cv2
 import arm as A
 import knob
+import strategy          # bite sizing, shared with the simulation
 
 flag = lambda k, d: next((type(d)(a.split('=')[1])
                           for a in sys.argv[1:] if a.startswith(f'--{k}=')), d)
@@ -130,7 +131,14 @@ def pick_knob(before, after):
 
 
 def one_bite(deg):
-    """Grip, roll by deg, release, park. Returns the roll actually commanded."""
+    """Grip, roll by deg, release, park. Returns the roll actually commanded.
+
+    The jaws are narrowed BEFORE the arm goes down. Simulation showed the
+    fingers splay to 88 mm when open against knobs 24 mm apart, so descending
+    open drives them into both neighbours; the count itself is a bench
+    measurement (see arm.PRECLOSE), only the direction came from simulation.
+    """
+    A.preclose()
     A.approach(A.counts_of(A.poses()[POSE]), speed=120)
     cmd, lag, holding = A.squeeze(SQUEEZE)
     if not holding:
@@ -146,6 +154,7 @@ def one_bite(deg):
 def main():
     stamp = time.strftime('%Y%m%d-%H%M%S')
     sess = Session(os.path.join(RUNS, stamp))
+    plan = strategy.Plan(TARGET, tol=TOL)
     log = {'stamp': stamp, 'target': TARGET, 'tol': TOL,
            'open_loop': OPEN_LOOP, 'squeeze': SQUEEZE, 'bites': []}
     target_knob, dead = None, 0
@@ -185,9 +194,28 @@ def main():
                 print('within tolerance, stopping')
                 break
 
-            # A single bite is capped by the roll joint's range from the taught
-            # pose. Anything larger is left for the next pass.
-            bite = float(np.clip(remaining, -100, 100))
+            # Bite sizing comes from strategy.py, which the simulation drives
+            # too, so the logic tuned there is the logic that runs here rather
+            # than a second copy that drifts. It divides by the measured grip
+            # efficiency, so the KNOB moves the remaining amount rather than
+            # the wrist, and aims deliberately short so any error undershoots.
+            #
+            # Capping the bite at the remaining travel, which is what this line
+            # used to do, cannot work through a slipping grip: at the measured
+            # 20 to 35 percent tracking the wrist has to turn three to five
+            # times further than the knob needs to go.
+            # The CAMERA is the authority on how far the knob has come: it is
+            # re-read every pass and cannot drift, whereas a running total
+            # inside the plan would accumulate every rejected or missed
+            # reading. So the plan's progress is overwritten from the camera
+            # here, and the plan is left to do only what it is for, which is
+            # deciding how big the next bite should be.
+            plan.target, plan.done_deg = TARGET, done
+            plan.why = ''
+            bite = plan.next_bite()
+            if bite is None:
+                print(f'stopping: {plan.why}')
+                break
             before = now
             got = one_bite(bite)
             sess.still(f'{i:02d}_after_bite')
@@ -208,6 +236,19 @@ def main():
                     print(f'the gripper is on {target_knob}')
                 achieved = wrap(after[target_knob]['angle']
                                 - before[target_knob]['angle'])
+                # A pointer reader can lock onto the wrong feature and report a
+                # rotation the wrist could not have produced. Learning from
+                # that would poison the estimate and send the next bite the
+                # wrong way, so an impossible reading is discarded.
+                if plan.implausible(bite, achieved):
+                    print(f'  ignoring an impossible reading: commanded '
+                          f'{bite:+.0f} but the pointer claims {achieved:+.0f}',
+                          file=sys.stderr)
+                    log['bites'].append({'n': i, 'commanded': bite,
+                                         'achieved': achieved,
+                                         'note': 'rejected as impossible'})
+                    continue
+                plan.record(bite, achieved)      # learns the grip efficiency
                 track = achieved / bite if bite else 0.0
                 print(f'commanded {bite:+.0f}, knob followed {achieved:+.0f} '
                       f'({track*100:.0f}% tracking)')
