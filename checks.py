@@ -43,12 +43,16 @@ STAGES = [
      'sim camera matches the bench optics, projection agrees with them'),
     ('servo',   'sim', 'servo_center.py',
      'centring converges from 10 mm out, and survives a wrong Jacobian'),
+    ('cycle',   'sim', 'cycle.py',
+     'find, centre, pre-close, descend, turn, verify runs on all three knobs'),
 ]
 
 # Stages needing a model download or torch; skipped unless asked for by name
 SLOW = {
     ('knobs_ml', 'cv', 'knobs_ml.py',
      'ML tier fires and the two tiers together cover 8 of 9 frames'),
+    ('edge', 'sim', 'edge_cases.py',
+     'the pedal moved, rotated, raised and reshaped still gets turned'),
 }
 
 

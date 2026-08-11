@@ -28,7 +28,9 @@ PEDAL = dict(
     knob_r=0.0095,  # knob body radius
     knob_h=0.014,   # knob body sticks up this far above the pedal top
     cap_r=0.005,    # metal cap radius (CAP_MM/2)
+    yaw=0.0,        # pedal rotation about z, radians (0 = square to the arm)
 )
+_PEDAL0 = dict(PEDAL)   # pristine bench values, for reset()
 Z_FLOOR = 0.045     # MEASURE: from ~/z_floor.json on the Pi
 
 # where to hang the tracked marker: link2 is the body after the wrist roll,
@@ -38,10 +40,39 @@ GRIPPER_MARKER = (0.00485, 0.0, 0.0828)
 
 
 def knob_targets():
-    """Grip target (m) for each knob: centre of the cap, in the arm frame."""
+    """Grip target (m) for each knob: centre of the cap, in the arm frame.
+
+    The row runs along the pedal's own y axis and is rotated by PEDAL['yaw'],
+    so a pedal that is not square to the arm still gives correct targets. This
+    is what ArUco buys us on the bench: the tags give the pedal's pose, and
+    the knob positions follow from it rather than from a taught guess.
+    """
     z = PEDAL['h'] + PEDAL['knob_h']
-    return {f'knob{i}': np.array([PEDAL['x'], (i - 1) * PEDAL['knob_dy'], z])
-            for i in range(3)}
+    yaw = PEDAL.get('yaw', 0.0)
+    c, s = np.cos(yaw), np.sin(yaw)
+    out = {}
+    for i in range(3):
+        dy = (i - 1) * PEDAL['knob_dy']
+        out[f'knob{i}'] = np.array([PEDAL['x'] - s * dy,
+                                    PEDAL['y'] + c * dy, z])
+    return out
+
+
+def configure(**kw):
+    """Move or reshape the pedal and rebuild the model. Returns the new MODEL.
+
+    Used by the edge-case sweep to ask what happens when the pedal is further
+    away, rotated, taller, or has a different knob spacing.
+    """
+    global MODEL
+    PEDAL.update(kw)
+    MODEL = build()
+    return MODEL
+
+
+def reset():
+    """Put the pedal back where the bench measurements say it is."""
+    return configure(**_PEDAL0)
 
 
 def build():
@@ -51,7 +82,9 @@ def build():
     w = spec.worldbody
     w.add_geom(name='table', type=mujoco.mjtGeom.mjGEOM_PLANE,
                size=[1, 1, 0.1], rgba=[.55, .5, .45, 1])
-    ped = w.add_body(name='pedal', pos=[PEDAL['x'], PEDAL['y'], PEDAL['h'] / 2])
+    _y = PEDAL.get('yaw', 0.0)
+    ped = w.add_body(name='pedal', pos=[PEDAL['x'], PEDAL['y'], PEDAL['h'] / 2],
+                     quat=[np.cos(_y / 2), 0, 0, np.sin(_y / 2)])
     ped.add_geom(name='pedal_box', type=mujoco.mjtGeom.mjGEOM_BOX,
                  size=[PEDAL['d'] / 2, PEDAL['w'] / 2, PEDAL['h'] / 2],
                  rgba=[.95, .45, .1, 1])                      # DS-1 orange
@@ -113,20 +146,28 @@ def _owner(geom_name):
     return None
 
 
-def _pose(data, xyz, gripper_angle=None):
+def _pose(data, xyz, gripper_angle=None, jaw=None):
     counts, achieved, clipped = ik.solve(xyz, gripper_angle)
     ang = ik.limit_joint_angles(ik.invkin(xyz, gripper_angle))
     for name, q in urdfmap.qpos_from(ang).items():
         data.qpos[MODEL.joint(name).qposadr[0]] = q
+    if jaw is not None:
+        for jn in ('arm1', 'arm1_left'):
+            try:
+                data.qpos[MODEL.joint(jn).qposadr[0]] = float(jaw)
+            except KeyError:
+                pass
     mujoco.mj_forward(MODEL, data)
     return counts, achieved, clipped
 
 
-def grade(xyz, gripper_angle=None, target_knob=None):
-    """Judge a candidate gripper target. Returns a dict; see module docstring."""
+def grade(xyz, gripper_angle=None, target_knob=None, jaw=None):
+    """jaw: finger angle in radians. It matters more than it sounds: with the
+    jaws wide open the fingers splay out far enough to foul the knobs either
+    side, so the same pose is a collision open and clear pre-closed."""
     data = mujoco.MjData(MODEL)
     try:
-        counts, achieved, clipped = _pose(data, xyz, gripper_angle)
+        counts, achieved, clipped = _pose(data, xyz, gripper_angle, jaw)
     except ValueError as e:
         return dict(reachable=False, why=str(e))
     hits = []
