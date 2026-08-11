@@ -39,6 +39,10 @@ STAGES = [
      'classical finder still reaches 6 of 9 bench frames, no false positives'),
     ('pointer', 'cv',  'pointer.py',
      'pointer angle within 3 degrees, signed rotation correct across the wrap'),
+    ('simcam',  'sim', 'simcam.py',
+     'sim camera matches the bench optics, projection agrees with them'),
+    ('servo',   'sim', 'servo_center.py',
+     'centring converges from 10 mm out, and survives a wrong Jacobian'),
 ]
 
 # Stages needing a model download or torch; skipped unless asked for by name

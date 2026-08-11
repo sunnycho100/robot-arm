@@ -31,6 +31,11 @@ PEDAL = dict(
 )
 Z_FLOOR = 0.045     # MEASURE: from ~/z_floor.json on the Pi
 
+# where to hang the tracked marker: link2 is the body after the wrist roll,
+# and the FK endpoint sits at this fixed offset in its frame (see build())
+GRIPPER_BODY = 'link2'
+GRIPPER_MARKER = (0.00485, 0.0, 0.0828)
+
 
 def knob_targets():
     """Grip target (m) for each knob: centre of the cap, in the arm frame."""
@@ -58,8 +63,22 @@ def build():
         k.add_geom(name=f'{name}_cap', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                    size=[PEDAL['cap_r'], 0.001],
                    pos=[0, 0, PEDAL['knob_h'] + 0.001], rgba=[.8, .8, .82, 1])
-    for g in w.add_light(pos=[0.3, -0.3, 0.8], dir=[-0.3, 0.3, -0.8]),:
-        pass
+    w.add_light(pos=[0.3, -0.3, 0.8], dir=[-0.3, 0.3, -0.8])
+
+    # A marker the camera can find on the gripper, which is what the servoing
+    # loop actually tracks. It sits at the FK endpoint: measured in link2's own
+    # frame it is (4.85, 0, 82.8) mm and stays there to within 0.2 mm across
+    # poses, which is the check that link2 is the right body to hang it on.
+    # On the real bench this role is played by a sticker or a tag on the
+    # gripper; here it is a saturated green ball, since nothing else in the
+    # scene is green.
+    for b in spec.bodies:
+        if b.name == GRIPPER_BODY:
+            b.add_geom(name='gripper_marker',
+                       type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.006, 0, 0],
+                       pos=list(GRIPPER_MARKER), rgba=[0, 1, 0, 1],
+                       contype=0, conaffinity=0)     # visual only, never collides
+            break
     return spec.compile()
 
 
@@ -139,6 +158,22 @@ if __name__ == '__main__':
     assert 0.02 <= span <= PEDAL['w'], (
         f'knob row spans {span*1000:.0f} mm, which does not fit a '
         f'{PEDAL["w"]*1000:.0f} mm pedal')
+    # The tracked marker must sit ON the gripper endpoint, at every pose. The
+    # servoing loop centres whatever feature it is given, so a marker parked
+    # somewhere else converges just as happily and puts the jaws in the wrong
+    # place. Nothing downstream can detect that; only this check can.
+    import mujoco as _mj
+    _d = mujoco.MjData(MODEL)
+    for _t in list(knob_targets().values()) + [(0.18, 0.03, 0.09)]:
+        _pose(_d, _t)
+        marker = _d.geom('gripper_marker').xpos
+        tip = ik._arm().endpoint(ik.counts_from(
+            ik.limit_joint_angles(ik.invkin(_t))))
+        off = float(np.linalg.norm(marker - tip)) * 1000
+        assert off < 1.0, (f'the tracked marker sits {off:.1f} mm from the '
+                           f'gripper endpoint, so servoing would centre the '
+                           f'wrong point')
+
     low = grade([PEDAL['x'], 0, 0.030])           # deliberately through the pedal
     assert (not low.get('above_floor', True)) or low.get('collisions') \
         or not low.get('reachable'), 'a too-low pose must be flagged somehow'
