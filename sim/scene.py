@@ -57,12 +57,21 @@ def build():
                  rgba=[.95, .45, .1, 1])                      # DS-1 orange
     for name, t in knob_targets().items():
         k = w.add_body(name=name, pos=[t[0], t[1], PEDAL['h']])
+        # A hinge about z so the knob can actually be turned, which is what
+        # makes the pointer reading testable rather than decorative.
+        k.add_joint(name=f'{name}_turn', type=mujoco.mjtJoint.mjJNT_HINGE,
+                    axis=[0, 0, 1], damping=0.05)
         k.add_geom(name=f'{name}_body', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                    size=[PEDAL['knob_r'], PEDAL['knob_h'] / 2],
                    pos=[0, 0, PEDAL['knob_h'] / 2], rgba=[.1, .1, .1, 1])
         k.add_geom(name=f'{name}_cap', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                    size=[PEDAL['cap_r'], 0.001],
                    pos=[0, 0, PEDAL['knob_h'] + 0.001], rgba=[.8, .8, .82, 1])
+        # the white pointer tab, offset from centre so its angle is readable
+        k.add_geom(name=f'{name}_tab', type=mujoco.mjtGeom.mjGEOM_BOX,
+                   size=[PEDAL['cap_r'] * 0.55, 0.0009, 0.0011],
+                   pos=[PEDAL['cap_r'] * 0.5, 0, PEDAL['knob_h'] + 0.0015],
+                   rgba=[1, 1, 1, 1])
     w.add_light(pos=[0.3, -0.3, 0.8], dir=[-0.3, 0.3, -0.8])
 
     # A marker the camera can find on the gripper, which is what the servoing
@@ -83,7 +92,25 @@ def build():
 
 
 MODEL = build()
-SCENE_BODIES = {'pedal', 'knob0', 'knob1', 'knob2'}
+
+# Identify scene objects by GEOM name, never by body name. MuJoCo welds a body
+# that has no joint into `world` when the model compiles, and the body name is
+# gone after that: every pedal and table contact reports its body as 'world'.
+# An earlier version of grade() matched on body names, found nothing called
+# 'pedal', and returned "no collisions" for every pose ever tested. Geom names
+# survive welding, so they are the thing to match on.
+SCENE_GEOMS = {'table', 'pedal_box'}
+for _i in range(3):
+    SCENE_GEOMS |= {f'knob{_i}_body', f'knob{_i}_cap', f'knob{_i}_tab'}
+
+
+def _owner(geom_name):
+    """Which scene object a geom belongs to, or None if it is part of the arm."""
+    if geom_name in ('table', 'pedal_box'):
+        return geom_name.replace('_box', '')
+    if geom_name.startswith('knob'):
+        return geom_name.split('_')[0]
+    return None
 
 
 def _pose(data, xyz, gripper_angle=None):
@@ -104,16 +131,18 @@ def grade(xyz, gripper_angle=None, target_knob=None):
         return dict(reachable=False, why=str(e))
     hits = []
     for c in data.contact:
-        b1 = MODEL.body(MODEL.geom_bodyid[c.geom1]).name
-        b2 = MODEL.body(MODEL.geom_bodyid[c.geom2]).name
-        scene = {b1, b2} & SCENE_BODIES
-        arm = {b1, b2} - SCENE_BODIES - {'world'}
-        if scene and arm and not (target_knob and scene == {target_knob}):
-            hits.append(f'{arm.pop()} vs {scene.pop()}')
-        g1 = MODEL.geom(c.geom1).name or b1
-        g2 = MODEL.geom(c.geom2).name or b2
-        if 'table' in (g1, g2) and not scene:
-            hits.append(f'{b1 if g2 == "table" else b2} vs table')
+        g1 = MODEL.geom(c.geom1).name or ''
+        g2 = MODEL.geom(c.geom2).name or ''
+        o1, o2 = _owner(g1), _owner(g2)
+        if (o1 is None) == (o2 is None):
+            continue                        # arm on arm, or scene on scene
+        obj = o1 or o2
+        # the arm's own geoms are unnamed in the URDF, so name them by body
+        arm_geom = c.geom2 if o1 else c.geom1
+        part = MODEL.body(MODEL.geom_bodyid[arm_geom]).name
+        if target_knob and obj == target_knob:
+            continue                        # touching the knob we are gripping
+        hits.append(f'{part} vs {obj} ({-c.dist*1000:.1f} mm in)')
     return dict(reachable=not clipped, achieved=np.round(achieved, 4),
                 above_floor=achieved[2] >= Z_FLOOR,
                 collisions=sorted(set(hits)), counts=[round(c) for c in counts])
@@ -173,6 +202,22 @@ if __name__ == '__main__':
         assert off < 1.0, (f'the tracked marker sits {off:.1f} mm from the '
                            f'gripper endpoint, so servoing would centre the '
                            f'wrong point')
+
+    # Collision detection must actually detect. The first version of grade()
+    # matched scene objects by BODY name, but MuJoCo welds jointless bodies
+    # into `world` and their names disappear, so it reported "no collisions"
+    # for every pose ever graded. A check that cannot go red is not a check:
+    # drive the arm straight into the pedal and demand it says so.
+    buried = grade([PEDAL['x'], 0.0, 0.030])
+    assert buried.get('collisions'), \
+        'a pose driven into the pedal reported no collisions'
+    assert any('pedal' in h for h in buried['collisions']), \
+        f'the pedal was not among the reported hits: {buried["collisions"]}'
+
+    # and it must stay quiet when the arm is nowhere near anything
+    clear = grade([PEDAL['x'], 0.0, 0.140])
+    assert not clear.get('collisions'), \
+        f'a pose well clear of the pedal reported {clear["collisions"]}'
 
     low = grade([PEDAL['x'], 0, 0.030])           # deliberately through the pedal
     assert (not low.get('above_floor', True)) or low.get('collisions') \

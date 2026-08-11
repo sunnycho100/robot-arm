@@ -30,7 +30,7 @@ STAGES = [
     ('urdfmap', 'sim', 'urdfmap.py',
      'course joint angles land on the same pose in the URDF'),
     ('scene',   'sim', 'scene.py',
-     'all three knobs reachable, collision-free, above the z floor'),
+     'knob geometry sane, collision detection actually detects, marker on tip'),
     ('compat',  'cv',  'compat.py',
      'aruco works on this OpenCV, intrinsics load and scale'),
     ('aruco',   'cv',  'aruco_locate.py',
