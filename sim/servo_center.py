@@ -54,20 +54,42 @@ class Servo:
         self.J = None
 
     def calibrate(self, home):
-        """Measure J by jogging x and y from `home`. -> J, pixels per metre."""
+        """Measure J by jogging x and y from `home`. -> J, pixels per metre.
+
+        Each axis is jogged forward, and backward if forward will not go. At
+        the edge of the workspace +5 mm can be unreachable while -5 mm is
+        fine, and the Jacobian column is the same either way once divided by
+        the signed step. Without this the calibration dies inside a move on a
+        steeply tilted pedal, which is precisely where centring is most
+        needed.
+        """
         self.move(home)
         base = self.see()
         if base is None:
             raise RuntimeError('cannot see the gripper at the home pose')
         cols = []
         for axis in (0, 1):
-            probe = np.array(home, float)
-            probe[axis] += self.jog
-            self.move(probe)
-            seen = self.see()
-            if seen is None:
-                raise RuntimeError(f'lost the gripper while jogging axis {axis}')
-            cols.append((np.array(seen) - np.array(base)) / self.jog)
+            col = None
+            errors = []
+            for step in (self.jog, -self.jog):
+                probe = np.array(home, float)
+                probe[axis] += step
+                try:
+                    self.move(probe)
+                except Exception as e:          # unreachable, joint limits, ...
+                    errors.append(f'{step*1000:+.0f} mm: {e.__class__.__name__}')
+                    continue
+                seen = self.see()
+                if seen is None:
+                    errors.append(f'{step*1000:+.0f} mm: gripper not visible')
+                    continue
+                col = (np.array(seen) - np.array(base)) / step
+                break
+            if col is None:
+                raise RuntimeError(
+                    f'cannot jog axis {"xy"[axis]} in either direction '
+                    f'({"; ".join(errors)})')
+            cols.append(col)
         self.move(home)
         self.J = np.column_stack(cols)
         if abs(np.linalg.det(self.J)) < 1e-6:

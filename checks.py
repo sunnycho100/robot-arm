@@ -45,6 +45,8 @@ STAGES = [
      'centring converges from 10 mm out, and survives a wrong Jacobian'),
     ('cycle',   'sim', 'cycle.py',
      'find, centre, pre-close, descend, turn, verify runs on all three knobs'),
+    ('sequence', 'sim', 'sequence.py',
+     'several knobs in a row, biting until each arrives despite a slipping grip'),
 ]
 
 # Stages needing a model download or torch; skipped unless asked for by name

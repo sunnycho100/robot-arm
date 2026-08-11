@@ -18,6 +18,16 @@ import ik, urdfmap
 
 HERE = pathlib.Path(__file__).parent
 
+
+def _quat(R):
+    """Rotation matrix -> MuJoCo quaternion (w, x, y, z)."""
+    w = np.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2.0
+    if w < 1e-8:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    return np.array([w, (R[2, 1] - R[1, 2]) / (4 * w),
+                     (R[0, 2] - R[2, 0]) / (4 * w),
+                     (R[1, 0] - R[0, 1]) / (4 * w)])
+
 PEDAL = dict(
     x=0.200,        # MEASURE: pedal centre forward of arm base (m)
     y=0.000,        # MEASURE: sideways offset (m)
@@ -29,6 +39,11 @@ PEDAL = dict(
     knob_h=0.014,   # knob body sticks up this far above the pedal top
     cap_r=0.005,    # metal cap radius (CAP_MM/2)
     yaw=0.0,        # pedal rotation about z, radians (0 = square to the arm)
+    pitch=0.0,      # tilt about the pedal's y axis: + tips the far edge up,
+                    # so the top face leans TOWARD the arm. This is the case
+                    # where a pedal is propped on something or on a sloped
+                    # board, and it moves the knob tops in x and z at once.
+    roll=0.0,       # tilt about x: one end of the knob row higher than the other
 )
 _PEDAL0 = dict(PEDAL)   # pristine bench values, for reset()
 Z_FLOOR = 0.045     # MEASURE: from ~/z_floor.json on the Pi
@@ -47,15 +62,41 @@ def knob_targets():
     is what ArUco buys us on the bench: the tags give the pedal's pose, and
     the knob positions follow from it rather than from a taught guess.
     """
-    z = PEDAL['h'] + PEDAL['knob_h']
-    yaw = PEDAL.get('yaw', 0.0)
-    c, s = np.cos(yaw), np.sin(yaw)
+    R = pedal_rotation()
+    centre = np.array([PEDAL['x'], PEDAL['y'], PEDAL['h'] / 2])
+    up = PEDAL['h'] / 2 + PEDAL['knob_h']      # centre of the box to the cap
     out = {}
     for i in range(3):
-        dy = (i - 1) * PEDAL['knob_dy']
-        out[f'knob{i}'] = np.array([PEDAL['x'] - s * dy,
-                                    PEDAL['y'] + c * dy, z])
+        local = np.array([0.0, (i - 1) * PEDAL['knob_dy'], up])
+        out[f'knob{i}'] = centre + R @ local
     return out
+
+
+def pedal_rotation():
+    """The pedal's orientation as a rotation matrix, from yaw, pitch and roll.
+
+    Applied yaw, then pitch, then roll, which is also the order the quaternion
+    handed to MuJoCo is built in. Keeping one function as the single source of
+    that convention is deliberate: the knob positions and the rendered body
+    have to agree exactly, and two hand-written rotation chains drift apart.
+    """
+    y, p, r = (PEDAL.get(k, 0.0) for k in ('yaw', 'pitch', 'roll'))
+    cz, sz = np.cos(y), np.sin(y)
+    cy, sy = np.cos(p), np.sin(p)
+    cx, sx = np.cos(r), np.sin(r)
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1.]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    return Rz @ Ry @ Rx
+
+
+def knob_normal():
+    """Unit vector out of the pedal's top face, in the arm frame.
+
+    On a tilted pedal the knob shaft is no longer vertical, so approaching
+    straight down means approaching at an angle to the shaft. This is what the
+    approach direction should follow."""
+    return pedal_rotation() @ np.array([0.0, 0.0, 1.0])
 
 
 def configure(**kw):
@@ -82,16 +123,22 @@ def build():
     w = spec.worldbody
     w.add_geom(name='table', type=mujoco.mjtGeom.mjGEOM_PLANE,
                size=[1, 1, 0.1], rgba=[.55, .5, .45, 1])
-    _y = PEDAL.get('yaw', 0.0)
     ped = w.add_body(name='pedal', pos=[PEDAL['x'], PEDAL['y'], PEDAL['h'] / 2],
-                     quat=[np.cos(_y / 2), 0, 0, np.sin(_y / 2)])
+                     quat=list(_quat(pedal_rotation())))
     ped.add_geom(name='pedal_box', type=mujoco.mjtGeom.mjGEOM_BOX,
                  size=[PEDAL['d'] / 2, PEDAL['w'] / 2, PEDAL['h'] / 2],
                  rgba=[.95, .45, .1, 1])                      # DS-1 orange
-    for name, t in knob_targets().items():
-        k = w.add_body(name=name, pos=[t[0], t[1], PEDAL['h']])
+    _R = pedal_rotation()
+    _q = list(_quat(_R))
+    _centre = np.array([PEDAL['x'], PEDAL['y'], PEDAL['h'] / 2])
+    for i, (name, t) in enumerate(knob_targets().items()):
+        base = _centre + _R @ np.array([0.0, (i - 1) * PEDAL['knob_dy'],
+                                        PEDAL['h'] / 2])
+        k = w.add_body(name=name, pos=list(base), quat=_q)
         # A hinge about z so the knob can actually be turned, which is what
         # makes the pointer reading testable rather than decorative.
+        # the hinge is about the knob's OWN axis, which on a tilted pedal is
+        # not the world z
         k.add_joint(name=f'{name}_turn', type=mujoco.mjtJoint.mjJNT_HINGE,
                     axis=[0, 0, 1], damping=0.05)
         k.add_geom(name=f'{name}_body', type=mujoco.mjtGeom.mjGEOM_CYLINDER,

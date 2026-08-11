@@ -82,6 +82,7 @@ class Cycle:
         self.noise_px = noise_px
         self.jaw = JAW_OPEN
         self.gripper_angle = None      # set by the plan stage
+        self.slip = 1.0                # per-knob grip efficiency, see turn_knob
         self.steps = []
 
     # ---- primitives the stages are built from ---------------------------
@@ -114,8 +115,17 @@ class Cycle:
         return float(np.degrees(q) % 360.0)
 
     def turn_knob(self, name, deg):
+        """Roll the wrist by deg. The knob follows only partly.
+
+        On the bench the knob slips inside the jaws under torque while the
+        force reading still says the grip is healthy: commanded +90 produced
+        +19, commanded +69 produced +28. `slip` reproduces that, because a
+        controller that is only ever tested against a perfect knob will be
+        tuned for a robot that does not exist.
+        """
         j = self.model.joint(f'{name}_turn').qposadr[0]
-        self.data.qpos[j] += np.radians(deg)
+        eff = self.slip.get(name, 1.0) if isinstance(self.slip, dict) else self.slip
+        self.data.qpos[j] += np.radians(deg * eff)
         mujoco.mj_forward(self.model, self.data)
 
     def collisions(self, xyz, target_knob):
@@ -147,8 +157,10 @@ class Cycle:
         # Can the arm get there, with SOME gripper pitch? The default is
         # chosen from height alone and is the binding constraint far out.
         self.set_jaw(PRECLOSE)
-        stand = np.array(target, float)
-        stand[2] += STANDOFF
+        # Stand off along the knob's OWN axis, not straight up. On a tilted
+        # pedal the shaft is not vertical, so a vertical retreat approaches the
+        # knob at an angle to it and the jaws meet the cap off-square.
+        stand = np.array(target, float) + STANDOFF * scene.knob_normal()
         found, ga, g = choose_gripper_angle([stand, target], knob, PRECLOSE)
         if not found:
             why = (g.get('why', 'out of reach') if not g.get('reachable') else
@@ -165,7 +177,11 @@ class Cycle:
         if hits:
             stage('approach', False, f'standoff fouls {hits[0]}')
             return log
-        self.move(stand)
+        try:
+            self.move(stand)
+        except ValueError as e:
+            stage('approach', False, str(e))
+            return log
         stage('approach', True,
               f'{STANDOFF*1000:.0f} mm above, jaws pre-closed to '
               f'{np.degrees(PRECLOSE):.0f} deg')
@@ -181,7 +197,11 @@ class Cycle:
         want_px = self.cam.project(target + np.array([0, 0, STANDOFF]))
         start = np.array(stand, float)
         start[:2] += self.rng.normal(0, 0.004, 2)       # a taught pose is not exact
-        xyz, err, iters = servo.center(start, want_px)
+        try:
+            xyz, err, iters = servo.center(start, want_px)
+        except ValueError as e:
+            stage('centre', False, f'ran out of workspace while correcting: {e}')
+            return log
         if err is None or err > servo_center.TOL_PX:
             stage('centre', False,
                   f'still {err if err is None else round(err,1)} px out after '
@@ -197,7 +217,11 @@ class Cycle:
         if hits:
             stage('descend', False, f'fouls {hits[0]}')
             return log
-        self.move(grip)
+        try:
+            self.move(grip)
+        except ValueError as e:
+            stage('descend', False, str(e))
+            return log
         stage('descend', True, f'at grip height {grip[2]*1000:.0f} mm, clear')
 
         # grip, turn, verify by reading the pointer
