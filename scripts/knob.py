@@ -87,16 +87,20 @@ CAP_MM = 10.0               # metal cap diameter. MEASURE YOURS, the distance sc
 
 # A good setup, for the calibrate report to grade against.
 #
-# WANT_ROUND is the cap's bounding-box aspect ratio, which for a circular cap
-# is cos(camera tilt off the knob's axis). It was 0.75, i.e. a 41 degree tilt,
-# chosen so the finder could still SEE the knob. That is the wrong bar. The
-# angle this file reports is a projection, and its local gain swings between
-# cos(tilt) and 1/cos(tilt) around the circle, so at 41 degrees a run asked for
-# 115 degrees really turns the knob anywhere from 92 to 132 depending on where
-# the pointer started (measured in strategy.py's self-check). The loop still
-# ARRIVES, it just arrives somewhere with a 40 degree spread. At 0.90, a
-# 26 degree tilt, that spread is 11 degrees and the number can be quoted.
-WANT_CAP_PX, WANT_SHARP, WANT_ROUND = 24, 250, 0.90
+# WANT_ROUND is the found blob's bounding-box aspect ratio. It is TEMPTING to
+# read that as cos(camera tilt), since a circular cap seen off-axis projects to
+# an ellipse, and this was briefly raised to 0.90 on exactly that reasoning.
+# It is wrong. The blob is the cap PLUS the pointer, which is just as bright
+# and merges with it, so the box is stretched along the pointer no matter where
+# the camera is. Measured straight down on the model, zero tilt: 0.72 with the
+# pointer visible, 1.00 with it darkened. The real bench photos read 0.63.
+#
+# So this cannot measure tilt, and a threshold set as though it could would
+# call a perfect overhead view "too side-on" and send someone off to fix a
+# camera that was already right. It is kept LOW on purpose, catching only a
+# genuinely bad viewpoint. Judge tilt by looking at the pedal's top face
+# instead, and see docs/RUNBOOK.md for what tilt actually costs.
+WANT_CAP_PX, WANT_SHARP, WANT_ROUND = 24, 250, 0.60
 
 
 def _masks(frame):
@@ -344,7 +348,9 @@ def check(frame):
         if sharp < WANT_SHARP:
             flags.append('SOFT, past the fixed-focus limit, back off a little')
         if f['roundness'] < WANT_ROUND:
-            flags.append('SQUASHED, too side-on, get more overhead')
+            flags.append('SQUASHED. Either very side-on, or the pointer has '
+                         'merged into the cap; look at the frame before '
+                         'moving the camera')
         if f['contrast'] < MIN_CONTRAST:
             flags.append('POINTER NOT FOUND, check lighting and glare')
         ok &= not flags
@@ -460,6 +466,21 @@ def selftest():
     close = [w for _, w in rejects if 'TOO CLOSE' in w]
     assert close, f'nothing was blamed on the camera being close: {rejects[:3]}'
     print(f'  caps 4x too big are rejected, and {len(close)} of them say why')
+
+    # Pin the fact that cost an hour: roundness is NOT cos(tilt). The pointer
+    # is as bright as the cap and merges with it, so the bounding box is
+    # stretched even head-on. Anyone tempted to raise WANT_ROUND to grade the
+    # camera angle should fail here first.
+    head_on = pedal([0.0, 0.0, 0.0])
+    worst_round = min(v['roundness'] for v in find_knobs(head_on).values())
+    assert worst_round < 0.95, (f'a head-on knob measured {worst_round:.2f} '
+                                f'round, so the pointer no longer merges with '
+                                f'the cap and this metric may have become '
+                                f'usable as a tilt gauge. Re-derive before '
+                                f'trusting it.')
+    assert WANT_ROUND < worst_round, (
+        f'WANT_ROUND is {WANT_ROUND}, but a knob seen straight on only reads '
+        f'{worst_round:.2f}. calibrate would call a perfect view "squashed".')
 
     # An empty scene must stay empty. Without this the checks above pass just
     # as well on a finder that calls everything a knob.
