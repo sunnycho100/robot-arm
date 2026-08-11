@@ -20,27 +20,25 @@ wanted near the target is a confident overshoot.
     python3 sequence.py                 # the default three-knob job list
     python3 sequence.py --slip 0.25     # pretend the grip is much worse
 """
+import pathlib
 import sys
+
 import numpy as np
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'scripts'))
 import scene
 import cycle
+import strategy          # the bite-sizing brain, shared with the Pi
+from strategy import Plan, wrap
 
-MAX_BITES = 6          # per knob, before giving up
-TOL = 8.0              # degrees, matches turn_knob.py
-BITE_LIMIT = 100.0     # the wrist joint's usable range in one go
-MIN_BITE = 4.0         # below this the move is not worth the wear
-EFF_FLOOR = 0.12       # never assume the grip is worse than this
-EFF_BLEND = 0.6      # how much of a new efficiency estimate to believe
-AIM = 0.90           # aim this fraction of the way, so errors undershoot
-DEAD_BITE = 3.0        # a bite that moves the knob less than this is dead
+# Bite sizing, the stop rules and the efficiency estimate all live in
+# scripts/strategy.py, which imports nothing but numpy so the Pi runs the same
+# code. Anything tuned here would otherwise have to be re-tuned there, and the
+# two copies would quietly diverge.
 
 # Which knob each role sits on, left to right along the pedal's own axis.
 # On the DS-1 the row is tone, level, dist; rename here, not in the code.
 ROLES = {'tone': 'knob0', 'level': 'knob1', 'dist': 'knob2'}
-
-
-def wrap(d):
-    return (float(d) + 180.0) % 360.0 - 180.0
 
 
 class Session:
@@ -58,96 +56,56 @@ class Session:
         if self.verbose:
             print(*a)
 
-    def _bite_size(self, knob, remaining):
-        """How far to command the wrist for this bite.
-
-        Divide by the efficiency estimate, so the KNOB moves the remaining
-        amount rather than the wrist, then aim deliberately short of it.
-
-        Aiming short is what replaces a cap on the bite. The first version
-        clamped each bite to 1.5x the remaining travel to stop a bad estimate
-        overshooting, but a 35 percent grip needs about 2.9x, so the clamp bound
-        first and the learned efficiency never got used: every knob took four or
-        five bites instead of three. Undershooting by a fixed fraction gets the
-        same protection without throwing the estimate away, because the error
-        that remains is always in the safe direction.
-        """
-        eff = max(self.efficiency.get(knob, 1.0), EFF_FLOOR)
-        want = AIM * remaining / eff
-        return float(np.clip(want, -BITE_LIMIT, BITE_LIMIT))
-
-    def _learn(self, knob, commanded, achieved):
-        if abs(commanded) < 1e-6:
-            return
-        seen = achieved / commanded
-        if seen <= 0:                       # went nowhere or backwards
-            return
-        old = self.efficiency.get(knob)
-        self.efficiency[knob] = (seen if old is None
-                                 else (1 - EFF_BLEND) * old + EFF_BLEND * seen)
-
     def turn_to(self, role, degrees):
         """Bite until this knob has moved `degrees`, or give up with a reason."""
         knob = ROLES.get(role, role)
         rec = dict(role=role, knob=knob, want=degrees, bites=[], ok=False)
         c = cycle.Cycle(noise_px=self.noise_px, seed=self.seed)
-        c.slip = self.slip if not isinstance(self.slip, dict) else self.slip
+        c.slip = self.slip
 
         try:
-            start = c.knob_angle(knob)
+            c.knob_angle(knob)
         except KeyError:
             rec['why'] = f'no knob for role {role!r}'
             self.say(f'{role}: {rec["why"]}')
             c.cam.close()
             return rec
 
-        self.say(f'\n{role} ({knob}): want {degrees:+.0f} deg')
-        done = 0.0
-        for i in range(1, MAX_BITES + 1):
-            remaining = degrees - done
-            if abs(remaining) <= TOL:
-                rec['ok'] = True
-                break
-            bite = self._bite_size(knob, remaining)
-            if abs(bite) < MIN_BITE:
-                rec['why'] = 'the next bite would be too small to bother with'
-                break
+        # Carry the efficiency learned on earlier knobs as a starting guess:
+        # they share a gripper, so the first bite on knob three should not be
+        # as ignorant as the first bite on knob one.
+        plan = Plan(degrees, efficiency=self.efficiency.get('shared'))
+        self.say(f'\n{role} ({knob}): want {degrees:+.0f} deg'
+                 + ('' if plan.efficiency is None
+                    else f' (starting from a {plan.efficiency:.0%} grip estimate)'))
 
+        while True:
+            bite = plan.next_bite()
+            if bite is None:
+                break
             before = c.knob_angle(knob)
             r = c.run(knob, bite, verbose=False)
             if not r['stages'] or not all(s['ok'] for s in r['stages'][:5]):
                 last = r['stages'][-1]
-                rec['why'] = f'{last["name"]}: {last["note"]}'
-                self.say(f'  bite {i}: stopped, {rec["why"]}')
+                plan.why = f'{last["name"]}: {last["note"]}'
+                self.say(f'  stopped: {plan.why}')
                 break
-            after = c.knob_angle(knob)
-            moved = wrap(after - before)
-            done += moved
-            eff_before = self.efficiency.get(knob)
-            self._learn(knob, bite, moved)
-            rec['bites'].append(dict(n=i, commanded=round(bite, 1),
-                                     moved=round(moved, 1),
-                                     total=round(done, 1),
-                                     efficiency=round(self.efficiency.get(knob, 1.0), 3)))
-            self.say(f'  bite {i}: commanded {bite:+6.1f}, knob moved '
-                     f'{moved:+6.1f}, total {done:+6.1f} of {degrees:+.0f}'
-                     f'   grip now {self.efficiency.get(knob, 1.0):.0%}'
-                     + ('' if eff_before is None else f' (was {eff_before:.0%})'))
-            if abs(moved) < DEAD_BITE:
-                rec['why'] = ('the knob stopped moving: the jaws are slipping '
-                              'or it has hit its end stop')
-                self.say(f'  {rec["why"]}')
-                break
-        else:
-            rec['why'] = f'still {degrees - done:+.0f} deg short after {MAX_BITES} bites'
+            moved = wrap(c.knob_angle(knob) - before)
+            was = plan.efficiency
+            plan.record(bite, moved)
+            self.say(f'  bite {len(plan.bites)}: commanded {bite:+6.1f}, knob '
+                     f'moved {moved:+6.1f}, total {plan.done_deg:+6.1f} of '
+                     f'{degrees:+.0f}   grip {plan.efficiency or 1:.0%}'
+                     + ('' if was is None else f' (was {was:.0%})'))
 
-        rec['done'] = round(done, 1)
-        rec['error'] = round(degrees - done, 1)
-        if abs(degrees - done) <= TOL:
-            rec['ok'] = True
+        if plan.efficiency:
+            self.efficiency['shared'] = plan.efficiency
+            self.efficiency[knob] = plan.efficiency
+        rec.update(bites=plan.bites, ok=plan.arrived,
+                   done=round(plan.done_deg, 1),
+                   error=round(plan.remaining, 1), why=plan.why)
         self.say(f'  -> {"reached" if rec["ok"] else "gave up"}: '
-                 f'{done:+.1f} of {degrees:+.0f} deg'
-                 + ('' if rec['ok'] else f' ({rec.get("why","")})'))
+                 f'{strategy.summary(plan)}')
         c.cam.close()
         self.log.append(rec)
         return rec

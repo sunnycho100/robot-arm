@@ -20,7 +20,11 @@ calibration of "which angle is volume 0" is never required.
 import numpy as np
 import cv2
 
-INNER, OUTER = 0.35, 1.05    # search the pointer between these multiples of r
+INNER, OUTER = 0.95, 1.90    # search from the CAP EDGE outward, never inside it:
+                             # inside the cap every angle is bright, so every
+                             # angle scores a long run and the pointer stops
+                             # standing out. knob.py searches cap_r+1 outward
+                             # for the same reason.
 MIN_PIXELS = 12              # fewer bright pixels than this is not a pointer
 MIN_CONTRAST = 12            # the tab must beat the cap by this much, in levels
 
@@ -31,47 +35,90 @@ def _annulus(shape, cx, cy, r_in, r_out):
     return (d2 >= r_in ** 2) & (d2 <= r_out ** 2)
 
 
-def angle(frame, knob, inner=INNER, outer=OUTER):
+def _ring_values(g, cx, cy, radius, n=180):
+    """Sample the image around a circle. -> (angles_deg, values)."""
+    th = np.radians(np.arange(n) * (360.0 / n))
+    ys = np.clip(np.rint(cy + radius * np.sin(th)).astype(int), 0, g.shape[0] - 1)
+    xs = np.clip(np.rint(cx + radius * np.cos(th)).astype(int), 0, g.shape[1] - 1)
+    return th, g[ys, xs].astype(float)
+
+
+def angle(frame, knob, inner=INNER, outer=OUTER, n=180):
     """Pointer angle in degrees, or None if no pointer stands out.
 
     knob is a dict with cx, cy, r_px (what knobs2.find returns).
+
+    Angles are in image convention: y grows downward, so the angle grows
+    CLOCKWISE on screen, matching scripts/knob.py. That agreement is not
+    cosmetic. If one module measures clockwise and the other anticlockwise,
+    the retry loop reads every correction as being in the wrong direction and
+    drives the knob away from the target instead of toward it.
+
+    Three bright things sit near a real pointer and none of them is it: the
+    brushed cap's starburst, which is fixed by the LIGHTING and does not turn
+    when the knob does; the pedal body; and the table beyond the pedal edge.
+    Taking the brightest angle around a ring picks all three, and scripts/
+    knob.py records that doing so put a knob 94 degrees out while reporting a
+    contrast of 2.7, which reads as perfectly healthy. So brightness alone is
+    not enough, and two further things are needed, both learned the hard way:
+
+    Bright RELATIVE TO THIS KNOB'S OWN CAP. The pointer is white paint and
+    saturates the sensor exactly as the aluminium beside it does; the
+    impostors do not. Referencing each knob's own cap survives a lighting
+    change, where a fixed threshold needs re-tuning.
+
+    It ENDS. The pointer is painted on the skirt, so the skirt closes around
+    it and its bright run has a finite length. The starburst, the pedal and
+    the table all run off the knob and keep going, so an angle whose bright
+    run is still going at the search limit scores zero.
     """
     g = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     cx, cy, r = knob['cx'], knob['cy'], knob['r_px']
-    ring = _annulus(g.shape, cx, cy, r * inner, r * outer)
-    if ring.sum() < 50:
+    if r < 4:
         return None
-    vals = g[ring]
-    # The tab is a small fraction of the annulus, so a fixed percentile either
-    # lands inside the cap or clips the tab as its apparent size changes with
-    # distance. Otsu adapts, but only if it is shown the right two
-    # populations: run it on the annulus as a whole and it happily separates
-    # the dark body from the cap and never mentions the tab. So drop
-    # everything at or below the median first (that is the body and the dimmer
-    # half of the cap), leaving cap-versus-tab as the only split available.
-    mid = float(np.median(vals))
-    bright = vals[vals > mid]
-    if bright.size < MIN_PIXELS:
+
+    # this knob's own cap brightness, from well inside the cap
+    _, cap_vals = _ring_values(g, cx, cy, max(2.0, r * 0.45), n=64)
+    cap = float(np.median(cap_vals))
+    cut = max(cap * 0.88, cap - 24.0)      # the pointer is as bright as the cap
+
+    radii = np.arange(inner * r, outer * r, max(1.0, r * 0.06))
+    if radii.size < 3:
         return None
-    cut, _ = cv2.threshold(bright.astype(np.uint8), 0, 255,
-                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # the pointer must really outshine the cap it sits on, not just be the
-    # bright half of a flat patch
-    if cut <= mid + MIN_CONTRAST:
+    lit = np.empty((radii.size, n), dtype=bool)
+    for i, rad in enumerate(radii):
+        _, v = _ring_values(g, cx, cy, rad, n)
+        lit[i] = v >= cut
+
+    # score each angle by the length of its contiguous bright run outward; a
+    # run still alive at the outer limit left the knob, so it scores nothing
+    score = np.zeros(n)
+    for a in range(n):
+        col = lit[:, a]
+        run = 0
+        for i in range(radii.size):
+            if col[i]:
+                run += 1
+            elif run:
+                break
+        score[a] = 0.0 if (run and col[-1]) else run
+
+    best = float(score.max())
+    if best < 2:
         return None
-    sel = ring & (g > cut)
-    n = int(sel.sum())
-    if n < MIN_PIXELS:
+    # a genuine pointer is a narrow wedge, not half the rim
+    if (score >= best * 0.6).sum() > n * 0.35:
         return None
-    ys, xs = np.nonzero(sel)
-    w = g[ys, xs].astype(float) - cut                 # brightness-weighted
+    # centroid of the winning wedge, so the answer is not quantised to the
+    # angular step
+    peak = int(np.argmax(score))
+    span = max(2, int(n * 0.06))
+    idx = (np.arange(peak - span, peak + span + 1)) % n
+    w = score[idx]
     if w.sum() <= 0:
         return None
-    mx = float((xs * w).sum() / w.sum()) - cx
-    my = float((ys * w).sum() / w.sum()) - cy
-    if np.hypot(mx, my) < r * 0.08:                   # centroid on the axis
-        return None
-    return float(np.degrees(np.arctan2(-my, mx)) % 360.0)
+    off = float((np.arange(-span, span + 1) * w).sum() / w.sum())
+    return float(((peak + off) * (360.0 / n)) % 360.0)
 
 
 def wrap(delta):
@@ -94,7 +141,7 @@ def draw(frame, knob, ang, colour=(0, 0, 255)):
         return vis
     cx, cy, r = knob['cx'], knob['cy'], knob['r_px']
     tip = (int(cx + r * np.cos(np.radians(ang))),
-           int(cy - r * np.sin(np.radians(ang))))
+           int(cy + r * np.sin(np.radians(ang))))
     cv2.circle(vis, (int(cx), int(cy)), int(r), (0, 255, 255), 2)
     cv2.line(vis, (int(cx), int(cy)), tip, colour, 3)
     cv2.putText(vis, f'{ang:.0f}', (int(cx) - 25, int(cy - r) - 10),
@@ -103,16 +150,33 @@ def draw(frame, knob, ang, colour=(0, 0, 255)):
 
 
 # ---------------------------------------------------------------- self-check
-def _synth(ang_deg, r=60, size=200, blur=3, noise=6, seed=0):
-    """A grey cap on a dark body with a white pointer tab at a known angle."""
+def _synth(ang_deg, r=60, size=200, blur=3, noise=6, seed=0, starburst=True,
+           background=90):
+    """A knob as the camera actually sees one.
+
+    Not just a tab on a matte disc. The cap carries a brushed starburst fixed
+    at a lighting angle that does NOT rotate with the knob, and the frame has
+    a bright background beyond the knob, because those are the two impostors
+    that fooled the previous detector.
+    """
     rng = np.random.default_rng(seed)
-    img = np.full((size, size, 3), 30, np.uint8)
+    img = np.full((size, size, 3), background, np.uint8)
     c = size // 2
     cv2.circle(img, (c, c), int(r * 1.45), (25, 25, 28), -1)
     cv2.circle(img, (c, c), r, (185, 188, 190), -1)
+    if starburst:
+        # a fixed specular streak across the cap: as bright as the pointer,
+        # never moves
+        for k in (35.0, 215.0):
+            t0 = np.radians(k)
+            cv2.line(img, (c, c),
+                     (int(c + r * 0.95 * np.cos(t0)), int(c + r * 0.95 * np.sin(t0))),
+                     (250, 250, 250), max(2, r // 12))
     t = np.radians(ang_deg)
-    tip = (int(c + r * 0.82 * np.cos(t)), int(c - r * 0.82 * np.sin(t)))
-    cv2.circle(img, tip, max(4, r // 7), (245, 245, 245), -1)
+    # the pointer is painted on the SKIRT, past the cap edge, and it ends
+    p0 = (int(c + r * 0.80 * np.cos(t)), int(c + r * 0.80 * np.sin(t)))
+    p1 = (int(c + r * 1.30 * np.cos(t)), int(c + r * 1.30 * np.sin(t)))
+    cv2.line(img, p0, p1, (250, 250, 250), max(3, r // 9))
     img = cv2.GaussianBlur(img, (blur * 2 + 1,) * 2, 0)
     if noise:
         img = np.clip(img.astype(int) + rng.normal(0, noise, img.shape),
@@ -148,7 +212,39 @@ if __name__ == '__main__':
             f'{true_a}->{true_b}: read {d:.1f}, expected {wrap(true_b-true_a):.1f}'
     print('signed rotation correct across the 0/360 wrap')
 
-    # 3. a cap with no pointer must return None, not a random angle
+    # 3. THE test: the starburst is a fixed lighting artefact, as bright as
+    # the pointer, that does not rotate. If the reading follows the knob and
+    # not the starburst, the reading is real. This is the exact failure
+    # scripts/knob.py records (a knob reported 94 degrees out at a healthy
+    # contrast of 2.7), so it gets a test rather than a comment.
+    for true in (0.0, 35.0, 90.0, 200.0, 215.0, 300.0):
+        img, knob = _synth(true, starburst=True, seed=11)
+        got = angle(img, knob)
+        assert got is not None, f'starburst frame at {true} deg was unreadable'
+        err = abs(wrap(got - true))
+        assert err < 6.0, (f'followed the starburst, not the pointer: pointer '
+                           f'at {true:.0f}, read {got:.0f} ({err:.0f} deg out)')
+    print('starburst rejected: the reading follows the knob, including when '
+          'the pointer sits on top of the streak')
+
+    # and it must not simply be ignoring bright things: with NO pointer but a
+    # starburst present, there is nothing to report
+    blank, kb = _synth(0.0, starburst=True, seed=12)
+    import cv2 as _cv
+    c = blank.shape[0] // 2
+    _cv.circle(blank, (c, c), int(kb['r_px'] * 1.45), (25, 25, 28), -1)
+    _cv.circle(blank, (c, c), int(kb['r_px']), (185, 188, 190), -1)
+    for k in (35.0, 215.0):
+        t0 = np.radians(k)
+        _cv.line(blank, (c, c),
+                 (int(c + kb['r_px'] * 0.95 * np.cos(t0)),
+                  int(c + kb['r_px'] * 0.95 * np.sin(t0))), (250, 250, 250), 5)
+    blank = _cv.GaussianBlur(blank, (7, 7), 0)
+    assert angle(blank, kb) is None, \
+        'a cap with only a starburst and no pointer produced an angle'
+    print('a starburst with no pointer correctly reads as nothing')
+
+    # 3b. a cap with no pointer must return None, not a random angle
     plain = np.full((200, 200, 3), 30, np.uint8)
     cv2.circle(plain, (100, 100), 87, (25, 25, 28), -1)
     cv2.circle(plain, (100, 100), 60, (185, 188, 190), -1)
