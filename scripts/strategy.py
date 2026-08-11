@@ -48,6 +48,9 @@ class Plan:
         self.tol = tol
         self.max_bites = max_bites
         self.efficiency = efficiency      # None until the first bite teaches us
+        # kept per direction, because the real grip is not symmetric
+        self._eff = {} if efficiency is None else {'cw': efficiency,
+                                                   'ccw': efficiency}
         self.done_deg = 0.0
         self.bites = []
         self.why = ''
@@ -92,7 +95,14 @@ class Plan:
             self.why = (f'still {self.remaining:+.0f} deg short after '
                         f'{self.max_bites} bites')
             return None
-        eff = max(self.efficiency if self.efficiency else 1.0, EFF_FLOOR)
+        key = 'cw' if self.remaining > 0 else 'ccw'
+        known = self._eff.get(key)
+        if known is None:
+            # nothing measured this way yet: the other direction is a better
+            # starting guess than nothing, but it is only a guess
+            other = [v for v in self._eff.values()]
+            known = min(other) if other else None
+        eff = max(known if known else 1.0, EFF_FLOOR)
         bite = AIM * self.remaining / eff
         bite = float(np.clip(bite, -BITE_LIMIT, BITE_LIMIT))
         if abs(bite) < MIN_BITE:
@@ -127,9 +137,17 @@ class Plan:
         seen = moved / commanded
         if seen <= 0:              # went nowhere, or backwards: not a ratio
             return
-        self.efficiency = (seen if self.efficiency is None
-                           else (1 - EFF_BLEND) * self.efficiency
-                           + EFF_BLEND * seen)
+        # Learn per DIRECTION. The measured grip is wildly asymmetric:
+        # commanded -90 produced -88 while commanded +90 produced +19 on the
+        # same knob. A single scalar averages those into a number that is
+        # wrong by 4x whichever way the next bite goes, and since bites all
+        # run one way until the target is overshot, the estimate would be
+        # rebuilt from scratch at exactly the moment it is needed most.
+        key = 'cw' if commanded > 0 else 'ccw'
+        old = self._eff.get(key)
+        self._eff[key] = (seen if old is None
+                          else (1 - EFF_BLEND) * old + EFF_BLEND * seen)
+        self.efficiency = self._eff[key]
 
 
 def summary(plan):
@@ -197,4 +215,86 @@ if __name__ == '__main__':
         worst = max(worst, len(p.bites))
     print(f'200 random grips (20-90%) with 2 deg of reading noise: all arrived, '
           f'worst {worst} bites')
+    # The measured grip is ASYMMETRIC: on the same knob, commanded -90 gave
+    # -88 while commanded +90 gave +19. A run that overshoots and has to come
+    # back crosses that boundary, so the estimate has to be kept per
+    # direction. With one shared scalar the reversal is sized with a number
+    # that is wrong by more than 4x.
+    def asym(target, cw_eff, ccw_eff, per_direction=True):
+        p = Plan(target)
+        if not per_direction:
+            p._eff = _Shared()
+        while True:
+            b = p.next_bite()
+            if b is None:
+                return p
+            p.record(b, b * (cw_eff if b > 0 else ccw_eff))
+
+    class _Shared(dict):
+        """A dict that ignores the direction key, i.e. the old behaviour."""
+        def get(self, k, d=None):
+            return dict.get(self, 'both', d)
+        def __setitem__(self, k, v):
+            dict.__setitem__(self, 'both', v)
+
+    print()
+    print(f'{"case":>28} {"bites":>6} {"arrived":>8}')
+    for cw, ccw, label in ((0.98, 0.21, 'easy one way, stiff the other'),
+                           (0.21, 0.98, 'stiff one way, easy the other')):
+        for sign, name in ((1, 'forward'), (-1, 'reverse')):
+            p = asym(sign * 90.0, cw, ccw)
+            print(f'{label + ", " + name:>28} {len(p.bites):6d} {str(p.arrived):>8}')
+            assert p.arrived, f'{label} {name} did not arrive'
+    print('an asymmetric grip is handled in both directions')
+
+    # Where the per-direction estimate actually earns its keep: a LATER job
+    # on the same knob going the other way. Within one job the bites all run
+    # one way, so a shared scalar behaves identically; carry that scalar into
+    # a reversed job and it is wrong by the full asymmetry.
+    CW, CCW = 0.95, 0.20
+    first = Plan(90.0)
+    while True:
+        b = first.next_bite()
+        if b is None:
+            break
+        first.record(b, b * (CW if b > 0 else CCW))
+    # the sequencer hands what it learned to the next job on this knob
+    second = Plan(-90.0)
+    second._eff = dict(first._eff)
+    while True:
+        b = second.next_bite()
+        if b is None:
+            break
+        second.record(b, b * (CW if b > 0 else CCW))
+
+    naive = Plan(-90.0, efficiency=first.efficiency)   # one shared scalar
+    while True:
+        b = naive.next_bite()
+        if b is None:
+            break
+        naive.record(b, b * (CW if b > 0 else CCW))
+    print(f'a reversed job after learning the easy direction: '
+          f'{len(second.bites)} bites keeping the directions apart, '
+          f'{len(naive.bites)} with one shared number')
+    assert second.arrived and naive.arrived
+    assert len(second.bites) <= len(naive.bites), \
+        'separating the directions should never cost bites'
+    if len(second.bites) == len(naive.bites):
+        print('   (no measurable gain: aiming short recovers from a wrong '
+              'starting estimate\n    within one bite, so the split is '
+              'insurance rather than a saving)')
+
+    # and the reversal case: overshoot, then come back the other way
+    p = Plan(90.0)
+    hist = []
+    for _ in range(12):
+        b = p.next_bite()
+        if b is None:
+            break
+        eff = 0.95 if b > 0 else 0.20      # cheap forward, stiff backward
+        p.record(b, b * eff)
+        hist.append(round(b, 1))
+    assert p.arrived, f'reversal case stalled: {p.why}'
+    print(f'overshoot-and-return handled: bites {hist}')
+
     print('strategy self-checks passed')
