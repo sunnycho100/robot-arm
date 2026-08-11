@@ -187,7 +187,24 @@ def find_knobs(frame, rejects=None):
                       'skirt_r': int(round(cap_r * REACH)),
                       'roundness': min(w, h) / max(w, h)})
 
-    found.sort(key=lambda k: k['cy'])
+    # Name them along whichever image axis the row actually runs down.
+    #
+    # This used to sort by cy unconditionally, on the reasoning that the knobs
+    # sit in a column in the frame. That holds only for a camera off to the
+    # side. With the camera beyond the pedal looking back at the arm, the row
+    # lies HORIZONTALLY and all three knobs land on the same cy: measured at
+    # the specified mounting, 0 px of cy spread against 224 px of cx. The sort
+    # is then a tie broken by whatever order the blobs happened to come out in,
+    # so a single pixel of noise renames them between one frame and the next.
+    #
+    # turn_knob.py works out which knob it is holding on the first bite and
+    # re-reads that NAME every pass afterwards, so a reshuffle does not throw:
+    # it quietly measures a different knob and believes the answer.
+    if found:
+        span = lambda key: (max(f[key] for f in found)
+                            - min(f[key] for f in found))
+        axis = 'cy' if span('cy') >= span('cx') else 'cx'
+        found.sort(key=lambda k: k[axis])
     return {f'knob{i+1}': f for i, f in enumerate(found)}
 
 
@@ -466,6 +483,37 @@ def selftest():
     close = [w for _, w in rejects if 'TOO CLOSE' in w]
     assert close, f'nothing was blamed on the camera being close: {rejects[:3]}'
     print(f'  caps 4x too big are rejected, and {len(close)} of them say why')
+
+    # Names have to survive a frame of noise, in EITHER orientation. A camera
+    # beyond the pedal sees the row lie flat across the image, and a sort that
+    # always keys on cy is then a tie: the run re-reads its target knob by
+    # name every pass, so a reshuffle compares two different knobs and never
+    # complains.
+    # `want` rather than any angles: _synth paints a bright background right up
+    # to the skirt, and at some pointer angles the blur bridges the dark ring
+    # so the knob merges into it. That is the fixture, not the finder, and
+    # picking angles around it keeps this test about naming.
+    rng = np.random.default_rng(0)
+    for orient, build in (('column', lambda a: pedal(a)),
+                          ('row', lambda a: np.hstack(
+                              [_synth(x, r=25, size=200, seed=j)[0]
+                               for j, x in enumerate(a)]))):
+        clean = build(want)
+        base = find_knobs(clean)
+        assert len(base) == 3, f'{orient}: found {len(base)} knobs'
+        order = [(v['cx'], v['cy']) for v in base.values()]
+        for trial in range(6):
+            noisy = np.clip(clean.astype(int)
+                            + rng.normal(0, 3.0, clean.shape), 0, 255
+                            ).astype(np.uint8)
+            again = find_knobs(noisy)
+            assert len(again) == 3, f'{orient}: {len(again)} knobs under noise'
+            for (name, v), (cx, cy) in zip(again.items(), order):
+                assert abs(v['cx'] - cx) < 12 and abs(v['cy'] - cy) < 12, (
+                    f'{orient}: {name} jumped from ({cx},{cy}) to '
+                    f'({v["cx"]},{v["cy"]}) on a noise frame, so the names are '
+                    f'not stable and the run would re-read the wrong knob')
+    print('  knob names hold still under noise, row or column')
 
     # Pin the fact that cost an hour: roundness is NOT cos(tilt). The pointer
     # is as bright as the cap and merges with it, so the bounding box is
