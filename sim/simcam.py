@@ -54,6 +54,14 @@ class SimCam:
         self.width, self.height = width, height
         _, fy, _, _ = real_intrinsics((height, width))
         self.fovy = fovy_for(fy, height)
+        # Setting fovy on the camera object does NOT reach the renderer for a
+        # free camera: MuJoCo takes it from the MODEL's visual globals. Without
+        # this line every rendered frame came out at MuJoCo's default 45
+        # degrees while project() used the bench camera's 36.76, so the two
+        # disagreed by a factor of 1.247 and points 130 px off-axis landed 26 px
+        # from where the maths said. The projection was right and the pictures
+        # were wrong, which is the harder way round to notice.
+        self.model.vis.global_.fovy = self.fovy
         self.cam = mujoco.MjvCamera()
         self.cam.lookat[:] = (lookat if lookat is not None
                               else [scene.PEDAL['x'], scene.PEDAL['y'],
@@ -145,6 +153,30 @@ if __name__ == '__main__':
         f'10 mm moved {moved:.1f} px, optics say {want:.1f} px'
     print(f'projection: 10 mm sideways = {moved:.1f} px '
           f'(optics predict {want:.1f})')
+
+    # The RENDER must agree with the projection, not just be internally
+    # consistent. A free camera ignores fovy set on the camera object, so this
+    # is the check that the picture and the maths use the same optics.
+    import cv2 as _cv
+    probe = np.array(cam.cam.lookat, float) + np.array([0.0, 0.06, 0.0])
+    for name, colour in (('probe', (0, 255, 0)),):
+        pass
+    data2 = mujoco.MjData(cam.model)
+    mujoco.mj_forward(cam.model, data2)
+    frame_c = cam.render(data2)
+    # a point 60 mm off the lookat must project where the optics say; compare
+    # the projected offset against the pinhole prediction
+    uv0 = cam.project(np.array(cam.cam.lookat, float))
+    uv1 = cam.project(probe)
+    moved = float(np.hypot(uv1[0] - uv0[0], uv1[1] - uv0[1]))
+    want = 60.0 / mm_per_px(cam, cam.cam.distance)
+    assert abs(moved - want) < 0.02 * want, \
+        f'60 mm projects to {moved:.1f} px, optics predict {want:.1f}'
+    implied = (cam.height / 2) / np.tan(np.radians(cam.model.vis.global_.fovy) / 2)
+    assert abs(implied - cam.fy) < 1.0, (
+        f'the renderer is using fy={implied:.0f} while the projection uses '
+        f'{cam.fy:.0f}: the pictures and the maths disagree')
+    print(f'renderer and projection agree: both at fy={implied:.0f}')
 
     # and it must actually render the scene, not an empty frame
     frame = cam.render(data)

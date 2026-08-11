@@ -181,7 +181,7 @@ class Servo:
 
 
 # ------------------------------------------------------------------ sim rig
-def _rig(noise_px=0.5, seed=0, move_noise_mm=1.5):
+def _rig(noise_px=0.5, seed=0, move_noise_mm=1.5, detect=False):
     """A see/move pair backed by the MuJoCo scene.
 
     move_noise_mm matters more than the pixel noise and was missing entirely
@@ -209,16 +209,31 @@ def _rig(noise_px=0.5, seed=0, move_noise_mm=1.5):
         mujoco.mj_forward(model, data)
 
     def see():
-        # Use the marker's true position through the camera model rather than
-        # colour-detecting the rendered pixels: this test is about whether the
-        # control law converges, and a detector would only add its own bugs.
-        # noise_px stands in for what a real detector costs.
+        # The marker's true position through the camera model. Fast, and right
+        # for testing the control law, but it is not what the bench has:
+        # nothing there knows where the gripper is until something looks. Use
+        # detect=True for the honest version.
         uv = cam.project(data.geom_xpos[gid])
         if uv is None:
             return None
         return (uv[0] + rng.normal(0, noise_px), uv[1] + rng.normal(0, noise_px))
 
-    return see, move, cam, data
+    def see_detected():
+        """Render the frame and actually FIND the gripper in it.
+
+        This is the path the bench will take, and it exercises the renderer,
+        the detector and the loop together. It is slower by the cost of a
+        render per iteration, which is why it is not the default, but a loop
+        that only ever ran on ground-truth coordinates has never been tested
+        against pixels at all.
+        """
+        import sys as _sys, pathlib as _p
+        _sys.path.insert(0, str(_p.Path(__file__).parent.parent / 'cv'))
+        import gripper
+        hit = gripper.find(cam.render(data))
+        return None if hit is None else (hit['u'], hit['v'])
+
+    return (see_detected if detect else see), move, cam, data
 
 
 if __name__ == '__main__':
@@ -311,6 +326,33 @@ if __name__ == '__main__':
         # deliberately wrong Jacobian is expected to land less precisely, and
         # what matters is whether the knob still ends up in the jaws.
         assert ok >= 7, f'a J off by {label} left {8 - ok} grips outside 4 mm'
+
+    # ---- the same loop, driven by an actual detector on actual pixels -----
+    # Everything above reads the marker's position out of the physics state.
+    # The bench cannot do that. This runs the identical control law with the
+    # gripper found by looking at the rendered image, which is the only
+    # version whose result means anything off a laptop.
+    see_px, move_px, cam_px, _ = _rig(seed=4, detect=True)
+    sp = Servo(see_px, move_px)
+    Jp = sp.calibrate(home)
+    scale_p = float(np.linalg.norm(Jp, axis=0).mean()) / 1000.0
+    move_px(home)
+    tgt_px = see_px()
+    assert tgt_px is not None, 'the detector could not find the gripper at home'
+    landed_px, worst_px_mm = 0, 0.0
+    for k in range(8):
+        th = k * np.pi / 4
+        st = np.array(home, float)
+        st[:2] += 0.010 * np.array([np.cos(th), np.sin(th)])
+        _, e, _ = sp.center(st, tgt_px)
+        if e is not None:
+            mm = e / scale_p
+            worst_px_mm = max(worst_px_mm, mm)
+            landed_px += mm < 4.0
+    print(f'\nsame loop driven by the real detector on rendered pixels: '
+          f'{landed_px}/8 inside 4 mm, worst {worst_px_mm:.2f} mm')
+    assert landed_px == 8, f'only {landed_px}/8 landed when actually looking'
+    cam_px.close()
 
     # ---- refusing to work blind ------------------------------------------
     blind = Servo(lambda: None, move)

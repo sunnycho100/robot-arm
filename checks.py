@@ -37,6 +37,8 @@ STAGES = [
      'tags recover corners under warp and give millimetres'),
     ('knobs',   'cv',  'knobs2.py',
      'classical finder still reaches 6 of 9 bench frames, no false positives'),
+    ('gripper', 'cv',  'gripper.py',
+     'the gripper is findable in a real frame, which servoing needs'),
     ('pointer', 'cv',  'pointer.py',
      'pointer angle within 3 degrees, signed rotation correct across the wrap'),
     ('simcam',  'sim', 'simcam.py',
