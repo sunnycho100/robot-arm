@@ -30,6 +30,9 @@ PRECLOSE = 1.15      # jaw angle (rad) before descending; below this the open
                      # minimum for the centre knob and leaves the outer ones
                      # 0.7 mm inside a neighbour, so this carries real margin.
 TURN_TOL = 8.0       # degrees, matches turn_knob.py
+EJECT_MM = 4.0       # measured: more lateral error than this and the knob
+                     # escapes the jaws. This, not the servo's own aiming
+                     # tolerance, is what decides whether a grip is usable.
 JAW_OPEN, JAW_SHUT = 0.0, 1.83
 
 
@@ -74,12 +77,15 @@ def choose_gripper_angle(poses, knob, jaw):
 class Cycle:
     """Runs one knob. Holds the sim state so stages can be inspected."""
 
-    def __init__(self, cam=None, noise_px=0.5, seed=0):
+    def __init__(self, cam=None, noise_px=0.5, seed=0, move_noise_mm=1.5):
         self.model = scene.MODEL
         self.data = mujoco.MjData(self.model)
         self.cam = cam or simcam.SimCam(model=self.model)
         self.rng = np.random.default_rng(seed)
         self.noise_px = noise_px
+        # The arm lands roughly this far from where it was told. Leaving it at
+        # zero made every centring figure a figure for a robot nobody owns.
+        self.move_noise_mm = move_noise_mm
         self.jaw = JAW_OPEN
         self.gripper_angle = None      # set by the plan stage
         self.slip = 1.0                # per-knob grip efficiency, see turn_knob
@@ -87,7 +93,10 @@ class Cycle:
 
     # ---- primitives the stages are built from ---------------------------
     def move(self, xyz):
-        scene._pose(self.data, xyz, self.gripper_angle)
+        actual = np.asarray(xyz, float).copy()
+        if self.move_noise_mm:
+            actual[:2] += self.rng.normal(0, self.move_noise_mm / 1000.0, 2)
+        scene._pose(self.data, actual, self.gripper_angle)
         self._apply_jaw()
 
     def _apply_jaw(self):
@@ -202,14 +211,22 @@ class Cycle:
         except ValueError as e:
             stage('centre', False, f'ran out of workspace while correcting: {e}')
             return log
-        if err is None or err > servo_center.TOL_PX:
+        # Judge in millimetres against the distance that actually ejects the
+        # knob, not against a pixel count. Comparing to the module's old 2 px
+        # constant, rather than the tolerance the servo computed from its own
+        # measured scale, rejected every perfectly good grip the moment the
+        # arm was given realistic scatter.
+        scale = float(np.linalg.norm(servo.J, axis=0).mean()) / 1000.0
+        err_mm = None if err is None else err / scale
+        if err_mm is None or err_mm > EJECT_MM:
             stage('centre', False,
-                  f'still {err if err is None else round(err,1)} px out after '
-                  f'{iters} steps')
+                  f'still {"lost" if err_mm is None else f"{err_mm:.1f} mm"} out '
+                  f'after {iters} steps, which would eject the knob')
             return log
         stage('centre', True,
-              f'{err:.1f} px ({err*simcam.mm_per_px(self.cam, self.cam.cam.distance):.2f} mm) '
-              f'in {iters} steps')
+              f'{err_mm:.2f} mm in {iters} steps'
+              + ('' if err <= servo.tol_px else ' (outside the 2 mm target but '
+                                               'inside the grip)'))
 
         # descend to grip height, keeping the corrected x and y
         grip = np.array([xyz[0], xyz[1], target[2]])
