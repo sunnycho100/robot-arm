@@ -119,9 +119,39 @@ class Cycle:
                 uv[1] + self.rng.normal(0, self.noise_px))
 
     def knob_angle(self, name):
-        """Pointer angle in degrees, read from the tab's actual orientation."""
+        """Pointer angle in degrees, from the physics state.
+
+        Ground truth, useful for asking whether the CONTROL logic works. It is
+        not verification: the bench has no such number, and a 'verify' stage
+        built on it certifies geometry against itself. Use read_pointer() for
+        the version that has to survive a camera.
+        """
         q = self.data.qpos[self.model.joint(f'{name}_turn').qposadr[0]]
         return float(np.degrees(q) % 360.0)
+
+    def read_pointer(self, name):
+        """Pointer angle by RENDERING the scene and reading the pixels.
+
+        This is what the bench will do. It runs the real knob finder and the
+        real pointer reader over a rendered frame, so the verification path is
+        exercised rather than assumed. Returns None when the frame cannot be
+        read, which is itself the honest answer.
+        """
+        import sys as _sys, pathlib as _p
+        _sys.path.insert(0, str(_p.Path(__file__).parent.parent / 'cv'))
+        import knobs2, pointer
+        frame = self.cam.render(self.data)
+        uv = self.cam.project(self.data.geom(f'{name}_cap').xpos)
+        if uv is None:
+            return None
+        found = knobs2.find(frame)
+        if not found:
+            return None
+        # pick the detection nearest where this knob should appear
+        k = min(found, key=lambda d: (d['cx'] - uv[0]) ** 2 + (d['cy'] - uv[1]) ** 2)
+        if np.hypot(k['cx'] - uv[0], k['cy'] - uv[1]) > 3 * k['r_px']:
+            return None
+        return pointer.angle(frame, k)
 
     def turn_knob(self, name, deg):
         """Roll the wrist by deg. The knob follows only partly.

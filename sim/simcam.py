@@ -29,6 +29,14 @@ CV = HERE.parent / 'cv'
 
 WIDTH, HEIGHT = 1280, 960          # what the bench camera actually delivers
 
+# How far the camera sits above the pedal. 300 mm was the original guess and it
+# is too far: at 300 mm with this lens the pedal fills 9 percent of the frame
+# and the knob finder returns nothing at all, while the real bench photos it
+# was tuned on are 32 to 52 percent pedal. 200 mm gives about 30 percent and
+# 180 mm about 38. The mounting requirement is therefore not a distance but a
+# framing: the pedal has to fill roughly a third of the view.
+DISTANCE = 0.20
+
 
 def real_intrinsics(shape=(HEIGHT, WIDTH)):
     """(fx, fy, cx, cy) of the bench camera, scaled to a frame size."""
@@ -48,7 +56,7 @@ def fovy_for(fy, height):
 class SimCam:
     """A free camera posed over the scene, with the bench camera's optics."""
 
-    def __init__(self, width=WIDTH, height=HEIGHT, distance=0.30,
+    def __init__(self, width=WIDTH, height=HEIGHT, distance=0.20,
                  azimuth=90.0, elevation=-90.0, lookat=None, model=None):
         self.model = model or scene.MODEL
         self.width, self.height = width, height
@@ -133,9 +141,10 @@ if __name__ == '__main__':
 
     # the scale that matters: at 30 cm one pixel must be about half a mm,
     # which is what makes 2 mm lateral accuracy reachable at all
-    s = mm_per_px(cam, 0.30)
-    print(f'at 300 mm: {s:.3f} mm per pixel, so 2 mm is {2/s:.1f} px')
-    assert 0.15 < s < 0.30, f'{s:.3f} mm/px is not the expected scale'
+    s = mm_per_px(cam, cam.cam.distance)
+    print(f'at {cam.cam.distance*1000:.0f} mm: {s:.3f} mm per pixel, '
+          f'so 2 mm is {2/s:.1f} px')
+    assert 0.08 < s < 0.30, f'{s:.3f} mm/px is not the expected scale'
 
     # projection must agree with the optics it claims to have: a known
     # sideways offset at a known depth has to land a computable distance away

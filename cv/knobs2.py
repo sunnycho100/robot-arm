@@ -137,14 +137,22 @@ if __name__ == '__main__':
         tests = sorted(n for n, v in m.items()
                        if v['orientation'] == 'topdown' and v['knobs'] >= 2
                        and not v['overlay'])
-        hits = fails = 0
+        hits = fails = extra = 0
         for n in tests:
             ks = find(cv2.imread(str(docs / n)))
             print(f'  {n[:22]}: {len(ks)} knobs {[k["conf"] for k in ks]}')
             hits += len(ks) >= 2
             fails += len(ks) == 0
-        print(f'{hits}/{len(tests)} frames with 2+ knobs, {fails} found nothing')
+            # The pedal has exactly three knobs. Anything past three is a
+            # false positive, and counting only "frames with 2 or more" made
+            # false positives HELP the check pass, which is the opposite of
+            # what it claimed to be testing.
+            extra += max(0, len(ks) - 3)
+        print(f'{hits}/{len(tests)} frames with 2+ knobs, {fails} found '
+              f'nothing, {extra} detections beyond the three that exist')
         assert hits >= 6, f'only {hits} frames reached 2 knobs'
+        assert extra == 0, (f'{extra} false positives: a frame cannot contain '
+                            f'more than the three knobs on the pedal')
     else:
         print('bench photos not present, synthetic check only')
 

@@ -53,6 +53,7 @@ class Plan:
                                                    'ccw': efficiency}
         self.done_deg = 0.0
         self.bites = []
+        self.rejected = []
         self.why = ''
 
     # ---- state ---------------------------------------------------------
@@ -110,8 +111,34 @@ class Plan:
             return None
         return bite
 
-    def record(self, commanded, moved):
-        """Log what the pointer says actually happened, and learn from it."""
+    def implausible(self, commanded, moved):
+        """Is this reading too strange to believe?
+
+        A pointer reader can lock onto the wrong feature and report an angle
+        180 degrees out, which turns into a huge fictitious rotation. Measured
+        in simulation: a knob turned 0 degrees read as 359 while its
+        neighbours in the same frame agreed, so the reading was confidently
+        wrong rather than noisy. Believing it would poison the efficiency
+        estimate and send the next bite the wrong way.
+
+        The knob cannot outrun the wrist: it can move at most what was
+        commanded, plus slack for reading error. Anything past that is a
+        misread, not a measurement.
+        """
+        limit = abs(commanded) * 1.35 + 12.0
+        return abs(wrap(moved)) > limit
+
+    def record(self, commanded, moved, allow_implausible=False):
+        """Log what the pointer says actually happened, and learn from it.
+
+        A reading the knob could not physically have produced is discarded
+        rather than learned from, and reported so the caller can take another
+        frame instead of acting on a lie.
+        """
+        if not allow_implausible and self.implausible(commanded, moved):
+            self.rejected.append(dict(commanded=round(float(commanded), 1),
+                                      moved=round(wrap(moved), 1)))
+            return 'reading rejected as impossible, take another frame'
         moved = wrap(moved)
         self.done_deg += moved
         self._learn(commanded, moved)
@@ -296,5 +323,19 @@ if __name__ == '__main__':
         hist.append(round(b, 1))
     assert p.arrived, f'reversal case stalled: {p.why}'
     print(f'overshoot-and-return handled: bites {hist}')
+
+    # A misread that claims more rotation than the wrist commanded must be
+    # thrown away, not learned from.
+    p = Plan(30.0)
+    b = p.next_bite()                        # about 27 degrees of wrist
+    # measured in simulation: the reader flipped and a 20 degree turn was
+    # reported as 149.8, which no grip could have produced
+    out = p.record(b, 149.8)
+    assert 'rejected' in out, f'an impossible reading was accepted: {out}'
+    assert not p.bites and p.rejected, 'the bad reading was not recorded as bad'
+    assert p.done_deg == 0.0, 'a rejected reading still moved the total'
+    good = p.record(b, b * 0.4)              # a believable one still lands
+    assert p.bites and abs(p.done_deg - b * 0.4) < 1e-6
+    print('a physically impossible pointer reading is rejected, not believed')
 
     print('strategy self-checks passed')

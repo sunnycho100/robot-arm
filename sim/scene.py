@@ -147,10 +147,18 @@ def build():
         k.add_geom(name=f'{name}_cap', type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                    size=[PEDAL['cap_r'], 0.001],
                    pos=[0, 0, PEDAL['knob_h'] + 0.001], rgba=[.8, .8, .82, 1])
-        # the white pointer tab, offset from centre so its angle is readable
+        # The white pointer, painted across the cap edge and onto the SKIRT,
+        # which is where the real one is. It used to sit wholly inside the cap,
+        # and the reader searches outward from the cap edge precisely because
+        # the real pointer ends on the dark skirt, so nothing was ever found.
+        # Sim geometry that quietly disagrees with the hardware makes the
+        # perception look broken when it is the model that is wrong.
+        _tab_in, _tab_out = PEDAL['cap_r'] * 0.45, PEDAL['knob_r'] * 0.92
         k.add_geom(name=f'{name}_tab', type=mujoco.mjtGeom.mjGEOM_BOX,
-                   size=[PEDAL['cap_r'] * 0.55, 0.0009, 0.0011],
-                   pos=[PEDAL['cap_r'] * 0.5, 0, PEDAL['knob_h'] + 0.0015],
+                   size=[(_tab_out - _tab_in) / 2, PEDAL['cap_r'] * 0.18,
+                         0.0011],
+                   pos=[(_tab_out + _tab_in) / 2, 0,
+                        PEDAL['knob_h'] + 0.0012],
                    rgba=[1, 1, 1, 1])
     w.add_light(pos=[0.3, -0.3, 0.8], dir=[-0.3, 0.3, -0.8])
 
