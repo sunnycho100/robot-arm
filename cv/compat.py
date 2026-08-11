@@ -106,6 +106,20 @@ if __name__ == '__main__':
         assert err < 2, f'{name}: corner off by {err:.1f} px'
         print(f'  {name}: detected id 7, corners within {err:.1f} px')
 
+    # Subpixel refinement must be live: the servoing loop spends that accuracy
+    # directly. It cannot be shown on the axis-aligned marker above, whose
+    # corners land exactly on integers with or without it. Rotate the marker
+    # so the true corners fall between pixels, then refined corners come back
+    # fractional and unrefined ones snap to whole numbers.
+    rot = cv2.warpAffine(img, cv2.getRotationMatrix2D((200, 200), 11.0, 1.0),
+                         (400, 400), borderValue=255)
+    c, i = detect(rot, '6x6_250')
+    assert len(i) == 1, 'rotated marker was not detected at all'
+    frac = np.abs(c[0] - np.round(c[0])).max()
+    assert frac > 0.02, ('corners came back on whole pixels, so subpixel '
+                         'refinement is not running')
+    print(f'  subpixel refinement live (corners fractional by {frac:.2f} px)')
+
     corners, ids, which = detect_any(np.full((400, 400), 255, np.uint8))
     assert which is None and len(ids) == 0, 'blank image must find nothing'
 

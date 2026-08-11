@@ -124,6 +124,21 @@ if __name__ == '__main__':
         print(f'{name} at {np.round(t, 3)}: {g}')
     g = grade(knob_targets()['knob1'], target_knob='knob1')
     assert g['reachable'] and g['above_floor'], 'centre knob must be reachable'
+
+    # The knobs must sit ON the pedal. Reachability alone does not notice a
+    # wrong spacing: knobs scattered a quarter of a metre apart are still
+    # perfectly reachable, and would silently become the geometry the whole
+    # pipeline trusts.
+    t = knob_targets()
+    for name, p in t.items():
+        dy = abs(p[1] - PEDAL['y'])
+        assert dy <= PEDAL['w'] / 2, (
+            f'{name} sits {dy*1000:.0f} mm off centre, outside the '
+            f'{PEDAL["w"]*1000:.0f} mm wide pedal')
+    span = max(p[1] for p in t.values()) - min(p[1] for p in t.values())
+    assert 0.02 <= span <= PEDAL['w'], (
+        f'knob row spans {span*1000:.0f} mm, which does not fit a '
+        f'{PEDAL["w"]*1000:.0f} mm pedal')
     low = grade([PEDAL['x'], 0, 0.030])           # deliberately through the pedal
     assert (not low.get('above_floor', True)) or low.get('collisions') \
         or not low.get('reachable'), 'a too-low pose must be flagged somehow'

@@ -165,9 +165,18 @@ if __name__ == '__main__':
     print(f'synthetic: 3/3 knobs, centres within 8 px, radii '
           f'{[round(k["r_px"]) for k in ks]}')
 
-    # a square grey patch (an ArUco cell) must NOT be called a knob
+    # A white ArUco cell must NOT be called a knob. It has to be built the way
+    # a real one appears: a grey square ringed by black cells, so it passes the
+    # dark-ring test and ONLY its shape can reject it. A square drawn straight
+    # onto the orange is no test at all, since the ring test throws it out and
+    # the shape rule is never exercised. (Checked by deleting the shape bound:
+    # the weak version still passed, this one fails.)
     tag = img.copy()
-    cv2.rectangle(tag, (60, 60), (150, 150), (200, 200, 200), -1)
-    assert len(find(tag)) == 3, 'a square patch was mistaken for a knob'
-    print('square tag cell correctly rejected')
+    cv2.rectangle(tag, (40, 380), (190, 530), (20, 20, 22), -1)      # black cells
+    cv2.rectangle(tag, (75, 415), (155, 495), (200, 200, 203), -1)   # white cell
+    tag = cv2.GaussianBlur(tag, (5, 5), 0)
+    found = find(tag)
+    assert len(found) == 3, (f'a square tag cell was mistaken for a knob: '
+                             f'{len(found)} found, expected 3')
+    print('square tag cell correctly rejected (ring passed, shape caught it)')
     print('knobs2 self-checks passed')

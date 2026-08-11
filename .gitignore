@@ -18,3 +18,4 @@ sim/.venv/
 # model weights are downloaded on demand, never committed
 weights/
 *.pt
+checks.log

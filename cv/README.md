@@ -72,3 +72,24 @@ and occasionally one the size of the frame.
 - The ArUco checks are synthetic on purpose: the physical tag in the current
   bench photos has a torn border and detects in no dictionary at all. Print
   fresh tags before trusting any real-frame result.
+
+## Running the checks
+
+From the repo root:
+
+```
+python3 checks.py            # every stage, in dependency order, ~3 s
+python3 checks.py -v         # show each stage's own output
+python3 checks.py knobs      # just the stages whose name matches
+python3 checks.py knobs_ml   # the slow ML stage, only when named
+```
+
+When something fails, fix the FIRST red line. Later failures are usually its
+consequences, since the order is the order the pipeline depends on.
+
+Every check was verified by breaking the thing it guards and confirming it
+goes red. That audit found three checks that were passing vacuously, which
+are now fixed: the ArUco tag-cell test was being rejected by the wrong rule,
+the IK round-trip hid a wrong link length behind its joint-limit flag, and
+the scene accepted knobs placed a quarter of a metre apart. A check that
+never fails is not protecting anything.

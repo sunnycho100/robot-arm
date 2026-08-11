@@ -103,17 +103,25 @@ def counts_from(angles_rad, grip=500):
 
 
 def solve(endpoint, gripper_angle=None):
-    """endpoint (m) -> (counts, achieved_xyz, modified). The one-call API."""
+    """endpoint (m) -> (counts, achieved_xyz, clipped). The one-call API.
+
+    `clipped` means a joint hit its limit, and ONLY that. It is deliberately
+    not "the endpoint came out different": a target can be missed because the
+    arm cannot get there (clipped) or because the two kinematic models
+    disagree (a bug). Reporting both as one flag hides the second inside the
+    first, which is exactly how a wrong link length once slipped past the
+    round-trip check below.
+    """
     A = _arm()
     ang = invkin(endpoint, gripper_angle)
     if np.any(np.isnan(ang)):
         raise ValueError(f'target {tuple(endpoint)} m is out of reach '
                          f'(try a different gripper_angle)')
-    ang = limit_joint_angles(ang)
-    counts = counts_from(ang)
+    limited = limit_joint_angles(ang)
+    clipped = not np.allclose(limited, ang, atol=1e-9)
+    counts = counts_from(limited)
     achieved = A.endpoint(counts)
-    modified = not np.allclose(achieved, endpoint, atol=0.003)
-    return counts, achieved, modified
+    return counts, achieved, clipped
 
 
 if __name__ == '__main__':
@@ -126,15 +134,21 @@ if __name__ == '__main__':
     ]
     print(f'{"target (mm)":26s} {"achieved (mm)":26s} {"err mm":7s} clipped')
     worst = 0.0
+    unclipped = 0
     for t in targets:
         xyz, ga = (t[:3], t[3]) if len(t) == 4 else (t, None)
-        counts, got, mod = solve(xyz, ga)
+        counts, got, clipped = solve(xyz, ga)
         err = float(np.linalg.norm((np.array(xyz) - got))) * 1000
         assert not np.isnan(err), f'nan leaked through solve() for {xyz}'
-        if not mod:                    # clipped targets miss by design
+        if not clipped:                # a clipped target misses by design
             worst = max(worst, err)
+            unclipped += 1
         f = lambda v: f'({v[0]*1000:6.1f},{v[1]*1000:6.1f},{v[2]*1000:6.1f})'
-        print(f'{f(np.array(xyz)):26s} {f(got):26s} {err:6.2f}  {mod}')
+        print(f'{f(np.array(xyz)):26s} {f(got):26s} {err:6.2f}  {clipped}')
+    # Guard the guard: if a change made every target clip, `worst` would stay
+    # 0.0 and the assert below would pass while testing nothing at all.
+    assert unclipped >= 4, (f'only {unclipped} targets stayed inside the joint '
+                            f'limits, so the round-trip barely ran')
     assert worst < 3.0, f'round-trip error {worst:.2f} mm, IK and FK disagree'
     try:                               # unreachable target must raise, not nan
         solve((0.50, 0.0, 0.05))
