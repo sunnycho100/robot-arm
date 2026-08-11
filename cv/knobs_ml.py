@@ -22,9 +22,28 @@ having ultralytics installed at all.
 """
 import numpy as np
 
-PROMPTS = ['knob']       # 'control knob' and 'dial' were no better, and slower
-CONF = 0.05              # knobs are small and unusual; the useful range is low
+# Measured, not guessed. A SINGLE class name returns nothing at all here:
+# 'knob', 'dial', 'black knob' and 'guitar pedal knob' each scored zero boxes
+# across the whole test set, even at conf 0.01. Two descriptive prompts fire
+# on every frame. YOLO-World scores an image region against the class
+# embeddings it was given, so with one class there is nothing to be more like,
+# and everything stays below threshold. Give it at least two.
+PROMPTS = ['round black dial', 'silver cap']
+CONF = 0.02              # these knobs score low; the useful range really is here
+MAX_AREA = 0.25          # a box bigger than this fraction of the frame is junk
+IOU_MERGE = 0.4          # boxes overlapping more than this are the same knob
 MODEL = 'yolov8s-world.pt'
+
+
+def _iou(a, b):
+    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
+    x1, y1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+    if inter <= 0:
+        return 0.0
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    bb = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (aa + bb - inter)
 
 
 class MLKnobs:
@@ -43,19 +62,30 @@ class MLKnobs:
         return self._m
 
     def find(self, frame, view=None):
-        """-> the same list of dicts knobs2.find returns, source='ml'."""
+        """-> the same list of dicts knobs2.find returns, source='ml'.
+
+        The raw output needs cleaning: it emits several boxes per knob and
+        occasionally one the size of the whole frame.
+        """
         res = self.model.predict(frame, conf=self.conf, verbose=False)[0]
-        out = []
-        for box, conf in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist()):
-            x0, y0, x1, y1 = box
+        area = frame.shape[0] * frame.shape[1]
+        boxes = sorted(zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist()),
+                       key=lambda t: -t[1])          # best first, so it wins ties
+        kept, out = [], []
+        for (x0, y0, x1, y1), conf in boxes:
             w, h = x1 - x0, y1 - y0
             if w <= 0 or h <= 0:
                 continue
             if not (0.5 < w / h < 2.0):        # a knob is roughly as wide as tall
                 continue
+            if w * h > MAX_AREA * area:        # frame-sized box, not a knob
+                continue
+            if any(_iou((x0, y0, x1, y1), k) > IOU_MERGE for k in kept):
+                continue                       # another box on the same knob
+            kept.append((x0, y0, x1, y1))
             out.append(dict(cx=(x0 + x1) / 2, cy=(y0 + y1) / 2,
-                            r_px=float((w + h) / 4), conf=round(float(conf), 3),
-                            source='ml'))
+                            r_px=float((w + h) / 4),
+                            conf=round(float(conf), 3), source='ml'))
         if view is not None:
             for k in out:
                 k['cx_mm'], k['cy_mm'] = view.to_mm(k['cx'], k['cy'])

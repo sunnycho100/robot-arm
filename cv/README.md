@@ -52,6 +52,18 @@ cap-versus-tab as the only split available.
   16 detections, zero false positives. The 3 misses are frames where the
   pedal is blown out and the knobs sit in shadow, which is what the ML tier
   is for.
+- two tiers together: 8 of 9 frames. ML rescued two of the three frames the
+  classical tier dropped. The last one yields a single knob, not two.
+- YOLO-World speed: 130 to 215 ms per frame on the Mac.
+
+**A single class name makes YOLO-World return nothing.** 'knob', 'dial',
+'black knob' and 'guitar pedal knob' each scored zero boxes across the whole
+set, even at confidence 0.01. Two descriptive prompts
+(`['round black dial', 'silver cap']`) fire on every frame. The model scores
+regions against the class embeddings it is given, so with one class there is
+nothing to be more like. Always give it at least two. Its raw output also
+needs deduplication and a maximum-area check: it emits several boxes per knob
+and occasionally one the size of the frame.
 
 ## Notes
 
