@@ -12,9 +12,13 @@ PEDAL numbers marked MEASURE are bench placeholders: set them from the real
 tape-down on bench day (pedal position in the arm base frame, knob spacing).
 """
 import pathlib
+import sys
 import numpy as np
 import mujoco
-import ik, urdfmap
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'scripts'))
+import ik                       # lives with arm.py: the Pi runs it too
+import urdfmap
 
 HERE = pathlib.Path(__file__).parent
 

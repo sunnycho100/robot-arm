@@ -14,8 +14,11 @@ differs by a constant offset:
 ELBOW = atan2(r_34.z, r_34.x) = 50.41 deg, the course lower-arm diagonal.
 Run this file directly to verify the map against MuJoCo joint anchors.
 """
+import pathlib, sys
 import numpy as np
-import ik
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'scripts'))
+import ik                       # lives with arm.py: the Pi runs it too
 
 ELBOW = np.arctan2(ik.r_34[2], ik.r_34[0])          # 50.41 deg
 

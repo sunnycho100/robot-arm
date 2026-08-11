@@ -16,9 +16,12 @@ driving the arm into the pedal.
     python3 cycle.py            # one full turn on the centre knob
     python3 cycle.py 0 90       # knob0, 90 degrees
 """
+import pathlib as _pl, sys as _sys
 import numpy as np
 import mujoco
-import ik
+
+_sys.path.insert(0, str(_pl.Path(__file__).parent.parent / 'scripts'))
+import ik                       # lives with arm.py: the Pi runs it too
 import scene
 import simcam
 import servo_center

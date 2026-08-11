@@ -25,8 +25,9 @@ PY = HERE / 'sim' / '.venv' / 'bin' / 'python'
 
 # (stage, directory, module, what passing actually proves)
 STAGES = [
-    ('ik',      'sim', 'ik.py',
-     'course invkin round-trips against arm.py FK, unreachable raises'),
+    ('ik',      'scripts', 'ik.py',
+     'course invkin round-trips against arm.py FK, mm nudges land, '
+     'unreachable raises'),
     ('urdfmap', 'sim', 'urdfmap.py',
      'course joint angles land on the same pose in the URDF'),
     ('scene',   'sim', 'scene.py',

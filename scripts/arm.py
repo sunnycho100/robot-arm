@@ -9,6 +9,7 @@
   arm.py list              list saved poses
   arm.py grip N            close the gripper by N counts (negative opens)
   arm.py turn DEG          roll the gripper about its own axis by DEG degrees
+  arm.py nudge --dz=-4     shift the CURRENT pose by millimetres, add --save=NAME
 
 Motion flags:  --linear      constant velocity instead of minimum jerk
                --speed N     counts per second of the fastest joint (default 120)
@@ -466,6 +467,37 @@ def main():
         print(f'gripper at z = {z*1000:.1f} mm' +
               (f'   floor {f*1000:.1f} mm   {(z-f)*1000:+.1f} mm of clearance'
                if f is not None else '   (no floor taught yet)'))
+
+    elif cmd == 'nudge':
+        # The bench loop this exists for: goto a taught pose, look at where the
+        # fingers actually sit against the knob, correct by millimetres, look
+        # again, save. Before this the only remedy for "a few mm low" was
+        # re-teaching the whole pose by hand and hoping it did not sag.
+        #
+        # Deliberately slow and with contact detection on every step: a nudge is
+        # usually aimed at the pedal, and the point is to stop on a touch rather
+        # than shove. The height floor still applies, so a nudge cannot dig in.
+        import ik
+        d = [next((float(f.split('=')[1]) for f in flags
+                   if f.startswith(f'--d{ax}=')), 0.0) for ax in 'xyz']
+        here = read()
+        try:
+            target, got = ik.nudged(here, *d)
+        except ValueError as e:
+            sys.exit(f'nudge refused: {e}')
+        print(f'asked ({d[0]:+.1f}, {d[1]:+.1f}, {d[2]:+.1f}) mm, '
+              f'this pose moves ({got[0]:+.1f}, {got[1]:+.1f}, {got[2]:+.1f})')
+        print(f'  counts change by {[t - h for t, h in zip(target, here)]}')
+        if not move(target, speed=50, tol=35, check_every=2):
+            sys.exit('the nudge did not complete, so nothing was saved')
+        z, fl = float(endpoint(read())[2]), z_floor()
+        print(f'  now at z = {z*1000:.1f} mm' +
+              (f', {(z-fl)*1000:+.1f} mm above the floor' if fl is not None
+               else ' (no floor taught yet)'))
+        into = next((f.split('=')[1] for f in flags
+                     if f.startswith('--save=')), None)
+        if into:
+            save(into, look_safe())
 
     elif cmd == 'turn':
         turn_by(float(name), speed=speed, linear=linear)
