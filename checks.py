@@ -28,6 +28,11 @@ STAGES = [
     ('ik',      'scripts', 'ik.py',
      'course invkin round-trips against arm.py FK, mm nudges land, '
      'unreachable raises'),
+    ('strategy', 'scripts', 'strategy.py',
+     'bites converge through a slipping grip and an off-axis camera, '
+     'never overshooting'),
+    ('knob',    'scripts', 'knob.py selftest',
+     'the BENCH knob finder and pointer reader, on a synthetic pedal'),
     ('urdfmap', 'sim', 'urdfmap.py',
      'course joint angles land on the same pose in the URDF'),
     ('scene',   'sim', 'scene.py',
@@ -63,7 +68,7 @@ SLOW = {
 
 def run(stage, folder, module, claim, verbose=False):
     t0 = time.time()
-    p = subprocess.run([str(PY), module], cwd=HERE / folder,
+    p = subprocess.run([str(PY)] + module.split(), cwd=HERE / folder,
                        capture_output=True, text=True)
     dt = time.time() - t0
     ok = p.returncode == 0

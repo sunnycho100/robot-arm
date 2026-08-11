@@ -86,7 +86,17 @@ FX = 1441.0                 # C270 focal length in px at 1280x960, course calibr
 CAP_MM = 10.0               # metal cap diameter. MEASURE YOURS, the distance scales with it
 
 # A good setup, for the calibrate report to grade against.
-WANT_CAP_PX, WANT_SHARP, WANT_ROUND = 24, 250, 0.75
+#
+# WANT_ROUND is the cap's bounding-box aspect ratio, which for a circular cap
+# is cos(camera tilt off the knob's axis). It was 0.75, i.e. a 41 degree tilt,
+# chosen so the finder could still SEE the knob. That is the wrong bar. The
+# angle this file reports is a projection, and its local gain swings between
+# cos(tilt) and 1/cos(tilt) around the circle, so at 41 degrees a run asked for
+# 115 degrees really turns the knob anywhere from 92 to 132 depending on where
+# the pointer started (measured in strategy.py's self-check). The loop still
+# ARRIVES, it just arrives somewhere with a 40 degree spread. At 0.90, a
+# 26 degree tilt, that spread is 11 degrees and the number can be quoted.
+WANT_CAP_PX, WANT_SHARP, WANT_ROUND = 24, 250, 0.90
 
 
 def _masks(frame):
@@ -110,25 +120,54 @@ def _ring_vals(V, cx, cy, r, step=5):
             and 0 <= int(cx + r * np.cos(np.deg2rad(d))) < V.shape[1]]
 
 
-def find_knobs(frame):
+# The cap's allowed size on screen, in pixels of blob area. This is a FRAMING
+# constraint, not a tuning knob, and it is the one that will bite first if the
+# camera gets remounted: a cap outside this window is silently not a knob.
+#
+#     cap diameter on screen = FX * CAP_MM / distance
+#
+# so with FX = 1441 and a 10 mm cap the window below accepts roughly 205 mm to
+# 1000 mm, and with a 14 mm cap roughly 285 mm to 1400 mm. Anything CLOSER than
+# that is rejected for being too big. Measure CAP_MM before trusting either
+# number, because the whole window slides with it. `knob.py calibrate` prints
+# the distance it infers, which is the check that matters.
+CAP_AREA = (150, 4000)
+
+
+def find_knobs(frame, rejects=None):
     """Locate every knob in the frame. Returns {name: {cx, cy, cap_r, skirt_r}}.
 
     Names are assigned by position, top to bottom, so they stay stable as long as
     the pedal does not get rearranged.
+
+    Pass a list as `rejects` to find out what was thrown away and why. Finding
+    nothing is the failure mode that costs the most bench time, because the
+    frame looks fine to a human and the only message is that there are no
+    knobs; every plausible blob and the gate that killed it is the difference
+    between a two-minute fix and an afternoon.
     """
     white, dark = _masks(frame)
     n, lab, stats, cent = cv2.connectedComponentsWithStats(
         white.astype(np.uint8), connectivity=8)
 
+    def toss(a, why):
+        if rejects is not None and a >= CAP_AREA[0] // 2:
+            rejects.append((int(a), why))
+
     found = []
     for i in range(1, n):
         a = stats[i, cv2.CC_STAT_AREA]
         w, h = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
-        if not (150 <= a <= 4000):
+        if not (CAP_AREA[0] <= a <= CAP_AREA[1]):
+            toss(a, f'{"too big" if a > CAP_AREA[1] else "too small"}: '
+                    f'{a} px, want {CAP_AREA[0]}-{CAP_AREA[1]}'
+                 + (', so the camera is TOO CLOSE' if a > CAP_AREA[1] else ''))
             continue
         if not (0.6 <= w / max(h, 1) <= 1.7):          # roughly circular
+            toss(a, f'not round enough: {w}x{h}')
             continue
         if a / (w * h) < 0.55:                          # solid, not a ring or streak
+            toss(a, f'not solid: fills {a/(w*h):.0%} of its box')
             continue
         cx, cy = int(cent[i][0]), int(cent[i][1])
         # Equivalent-circle radius, not half the bounding box: a slightly elliptical
@@ -138,6 +177,7 @@ def find_knobs(frame):
         # The cap must be ringed by black skirt just outside it. Sampled close in,
         # because further out is the pedal, and on a knob near the edge, the table.
         if np.mean([_at(dark, cx, cy, cap_r + 3, d) for d in range(0, 360, 5)]) < 0.5:
+            toss(a, 'no black skirt around it, so it is not a knob cap')
             continue
         found.append({'cx': cx, 'cy': cy, 'cap_r': cap_r,
                       'skirt_r': int(round(cap_r * REACH)),
@@ -145,6 +185,34 @@ def find_knobs(frame):
 
     found.sort(key=lambda k: k['cy'])
     return {f'knob{i+1}': f for i, f in enumerate(found)}
+
+
+def _saved():
+    """The calibrated knob positions, or None if there are none to use.
+
+    Checked rather than trusted. A knobs.json written by an older version of
+    this file stores {name: [x, y]}, which reaches the pointer reader and dies
+    on `k['cx']` with "list indices must be integers" at the first camera read
+    of a run, several layers away from the actual problem. Anything that is not
+    the current shape is treated as no calibration at all, which falls back to
+    finding the knobs live in this frame, and says so.
+    """
+    if not os.path.exists(CONFIG):
+        return None
+    try:
+        saved = json.load(open(CONFIG))
+        ok = (isinstance(saved, dict) and saved and
+              all(isinstance(v, dict) and {'cx', 'cy', 'cap_r'} <= set(v)
+                  for v in saved.values()))
+    except Exception as e:
+        saved, ok = None, False
+        print(f'{CONFIG} will not parse ({e})', file=sys.stderr)
+    if ok:
+        return saved
+    print(f'ignoring {CONFIG}: it is not in the current format, so the knobs '
+          f'are being\nfound live instead. Run  python3 knob.py calibrate  to '
+          f'replace it.', file=sys.stderr)
+    return None
 
 
 def _pointer(V, S, cx, cy, cap_r):
@@ -185,7 +253,7 @@ def measure(frame, knobs=None):
     pointer was not distinguishable and the angle must not be trusted.
     """
     if knobs is None:
-        knobs = json.load(open(CONFIG)) if os.path.exists(CONFIG) else find_knobs(frame)
+        knobs = _saved() or find_knobs(frame)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     S, V = hsv[:, :, 1], hsv[:, :, 2]
     out = {}
@@ -236,12 +304,28 @@ def grab():
 
 def check(frame):
     """Grade the camera setup and print what to change. Returns the knobs found."""
-    knobs = find_knobs(frame)
+    rejects = []
+    knobs = find_knobs(frame, rejects)
     print(f'knobs found: {len(knobs)}')
     if not knobs:
         print('  NOTHING FOUND. Point the camera at the pedal so the knob tops are\n'
               '  visible, and make sure the pedal is lit well enough that the metal\n'
               '  caps read bright.')
+        if rejects:
+            # Say what was nearly a knob. "Nothing found" on a frame that looks
+            # perfectly good to a human is the most expensive message this tool
+            # can print, and the reason is almost always in this list.
+            print('\n  the biggest things it looked at and threw away:')
+            for a, why in sorted(rejects, reverse=True)[:6]:
+                print(f'    {a:7d} px  {why}')
+            big = sum(1 for a, w in rejects if 'TOO CLOSE' in w)
+            if big:
+                print(f'\n  {big} blobs were rejected for being too big, which '
+                      f'means the camera is\n  closer than this finder allows. '
+                      f'Caps must land in {CAP_AREA[0]}-{CAP_AREA[1]} px of '
+                      f'area\n  ({2*np.sqrt(CAP_AREA[0]/np.pi):.0f} to '
+                      f'{2*np.sqrt(CAP_AREA[1]/np.pi):.0f} px across). Back the '
+                      f'camera off and run this again.')
         return knobs
 
     found = measure(frame, knobs)
@@ -311,5 +395,101 @@ def main():
     print(f'annotated frame -> {shot}')
 
 
+def selftest():
+    """Check the finder and the pointer reader without a camera.
+
+    This file is what the demo actually runs, and until now it had no
+    automated check at all: `pointer.py` in cv/ is a separate, later
+    implementation and passing there says nothing about this one. The bench
+    photos cannot fill the gap either, since they are hand-held close-ups
+    whose caps are five times too big for this finder's window, so the scene
+    is synthetic and borrowed from pointer.py, starburst and all.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'cv'))
+    from pointer import _synth
+
+    def pedal(angles, r=25, scale=1, seed0=0):
+        """Three knobs stacked, the way the finder names them: top to bottom."""
+        return np.vstack([_synth(a, r=int(r * scale), size=int(200 * scale),
+                                 seed=seed0 + i)[0]
+                          for i, a in enumerate(angles)])
+
+    def decoy(size=200, r=25):
+        """A bright round blob of exactly knob size, with NO black ring.
+
+        The right size, the right shape, the right brightness: everything the
+        finder looks for except the skirt. Without one of these in the frame
+        the dark-surround test can be deleted and every check here still
+        passes, which makes them a description of the code rather than a test
+        of it. Physically this is a highlight on the pedal body.
+        """
+        img = np.full((size, size, 3), 140, np.uint8)
+        cv2.circle(img, (size // 2, size // 2), r, (188, 190, 192), -1)
+        return cv2.GaussianBlur(img, (7, 7), 0)
+
+    want = [0.0, 90.0, -140.0]
+    frame = np.vstack([pedal(want), decoy()])
+    found = find_knobs(frame)
+    assert len(found) == 3, (f'found {len(found)} knobs in a scene with three '
+                             f'knobs and one skirtless impostor')
+    read = measure(frame, found)
+    for (name, f), w in zip(sorted(read.items()), want):
+        err = abs((f['angle'] - w + 180) % 360 - 180)
+        assert err < 5.0, f'{name}: read {f["angle"]:.0f}, painted {w:.0f}'
+        assert f['contrast'] >= MIN_CONTRAST, \
+            f'{name}: contrast {f["contrast"]:.1f} on a clean synthetic pointer'
+    print(f'  3 knobs found, pointers within 5 deg of where they were painted')
+
+    # The sign convention is load-bearing: turn_knob.py subtracts these angles
+    # to decide which way the next bite goes, so a flipped sign sends the wrist
+    # the wrong way and the run walks away from the target.
+    f0, f1 = pedal([0.0] * 3), pedal([30.0] * 3)
+    a0 = measure(f0, find_knobs(f0))['knob1']['angle']
+    a1 = measure(f1, find_knobs(f1))['knob1']['angle']
+    assert 20 < ((a1 - a0 + 180) % 360 - 180) < 40, \
+        f'a +30 deg turn measured as {(a1 - a0 + 180) % 360 - 180:+.0f}: ' \
+        f'angles must grow CLOCKWISE, as knob.py documents'
+    print(f'  a +30 deg turn reads as {(a1 - a0 + 180) % 360 - 180:+.0f} deg, '
+          f'clockwise as documented')
+
+    # Too close is the failure the runbook can walk you into, so the finder has
+    # to both fail and SAY SO. A silent zero is what costs bench time.
+    rejects = []
+    assert not find_knobs(pedal(want, scale=4), rejects), \
+        'caps four times too big were accepted as knobs'
+    close = [w for _, w in rejects if 'TOO CLOSE' in w]
+    assert close, f'nothing was blamed on the camera being close: {rejects[:3]}'
+    print(f'  caps 4x too big are rejected, and {len(close)} of them say why')
+
+    # An empty scene must stay empty. Without this the checks above pass just
+    # as well on a finder that calls everything a knob.
+    blank = np.full((600, 200, 3), 200, np.uint8)
+    assert not find_knobs(blank), 'found knobs in a blank frame'
+    print('  a blank frame yields nothing')
+
+    # A stale knobs.json must not reach the pointer reader. turn_knob.py calls
+    # measure() with no knobs, so whatever is on disk is what the first camera
+    # read of the demo uses, and the old {name: [x, y]} shape died there with
+    # "list indices must be integers" three layers from the cause.
+    global CONFIG
+    keep, CONFIG = CONFIG, os.path.join(HERE, '_selftest_stale.json')
+    try:
+        json.dump({'top': [835, 442], 'left': [787, 483]}, open(CONFIG, 'w'))
+        assert _saved() is None, 'the old knobs.json format was accepted'
+        got = measure(frame)              # the exact call turn_knob.py makes
+        assert len(got) == 3, f'fell back to live finding but got {len(got)}'
+        json.dump('not even a dict', open(CONFIG, 'w'))
+        assert _saved() is None, 'a garbage knobs.json was accepted'
+    finally:
+        if os.path.exists(CONFIG):
+            os.remove(CONFIG)
+        CONFIG = keep
+    print('  a stale knobs.json is ignored, not followed into a crash')
+    print('knob self-checks passed')
+
+
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == 'selftest':
+        selftest()
+    else:
+        main()

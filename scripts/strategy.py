@@ -201,13 +201,21 @@ if __name__ == '__main__':
         if eff >= 0.15:
             assert p.arrived, f'a {eff:.0%} grip should reach 90 deg'
 
-    # never overshoot, in either direction: aiming short is the whole point
+    # Never overshoot, in either direction: aiming short is the whole point.
+    # Judged on the WHOLE trajectory, not the final total. An earlier version
+    # only checked where the run ended up, which a run that sailed past the
+    # target and came back still satisfies: inverting AIM to 1.30 left this
+    # check green while every first bite overshot by 30 percent. On a real
+    # knob that is a run winding past its end stop and unwinding again.
     for eff in (0.15, 0.35, 0.6, 1.0):
         for target in (30.0, 90.0, 150.0, -90.0):
             p = simulate(target, eff)
-            assert abs(p.done_deg) <= abs(target) + p.tol, \
-                f'overshot: {p.done_deg:.1f} past {target} at {eff:.0%} grip'
-    print('\nno overshoot at any grip quality, in either direction')
+            peak = max([abs(b['total']) for b in p.bites] or [0.0])
+            assert peak <= abs(target) + p.tol, \
+                (f'overshot to {peak:.1f} on the way to {target} at '
+                 f'{eff:.0%} grip')
+    print('\nno overshoot at any grip quality, in either direction, at any '
+          'point in the run')
 
     # a knob that will not move must be called dead, not merely short
     p = simulate(90.0, 0.0)
@@ -337,5 +345,77 @@ if __name__ == '__main__':
     good = p.record(b, b * 0.4)              # a believable one still lands
     assert p.bites and abs(p.done_deg - b * 0.4) < 1e-6
     print('a physically impossible pointer reading is rejected, not believed')
+
+    # ---- an off-axis camera ------------------------------------------------
+    # Everything above simulates moved = commanded * eff, a CONSTANT gain. The
+    # real measurement does not work like that. knob.py reads the pointer in
+    # image coordinates, and a camera looking at the knob's plane off-axis by
+    # theta compresses one image axis by cos(theta), so what it reports is
+    #
+    #     apparent = atan2(sin(true) * cos(theta), cos(true))
+    #
+    # whose local gain swings between cos(theta) and 1/cos(theta) depending on
+    # where the pointer happens to be sitting. The loop learns from that ratio,
+    # so it is worth knowing whether a moving gain breaks it.
+    def apparent(true_deg, tilt_deg):
+        t, th = np.radians(true_deg), np.radians(tilt_deg)
+        return np.degrees(np.arctan2(np.sin(t) * np.cos(th), np.cos(t)))
+
+    def through_tilt(target, grip, tilt, start):
+        p, true = Plan(target), start
+        while True:
+            b = p.next_bite()
+            if b is None:
+                break
+            was = apparent(true, tilt)
+            true += b * grip
+            p.record(b, wrap(apparent(true, tilt) - was))
+        return p, true - start
+
+    print()
+    print(f'{"tilt":>6} {"grip":>6} {"arrived":>9} {"bites":>6} '
+          f'{"true turn for a 115 deg apparent target":>40}')
+    baseline = None
+    for tilt in (0, 25, 41):            # 41 deg is roundness 0.75, knob.py's floor
+        for grip in (0.95, 0.5, 0.25):
+            runs = [through_tilt(115.0, grip, tilt, s) for s in range(0, 360, 15)]
+            arrived = sum(p.arrived for p, _ in runs)
+            bites = max(len(p.bites) for p, _ in runs)
+            trues = [t for _, t in runs]
+            if tilt == 0 and grip == 0.25:
+                baseline = bites
+            print(f'{tilt:5d}d {grip:5.0%} {arrived:6d}/24 {bites:6d} '
+                  f'{min(trues):17.0f} to {max(trues):.0f} deg')
+            # Arriving is not negotiable: the target is expressed in the same
+            # projected degrees the camera reports, so the distortion must not
+            # stop the loop from closing on it.
+            assert arrived == len(runs), (f'{arrived} of {len(runs)} arrived at '
+                                          f'{tilt} deg tilt, {grip:.0%} grip')
+    # A moving gain is allowed to cost a bite. It is not allowed to cost the run.
+    worst = max(len(p.bites) for tilt in (25, 41) for grip in (0.95, 0.5, 0.25)
+                for p, _ in [through_tilt(115.0, grip, tilt, s)
+                             for s in range(0, 360, 15)])
+    assert worst <= baseline + 1, (f'tilt cost {worst - baseline} extra bites, '
+                                   f'the estimate is chasing the projection')
+
+    # The guard against impossible readings must not fire on honest ones: a
+    # tilt that MAGNIFIES rotation makes a good grip look better than 1:1.
+    fired = sum(Plan(115.0).implausible(60.0, wrap(apparent(s + 60.0 * 0.95, 41)
+                                                   - apparent(s, 41)))
+                for s in range(0, 360, 10))
+    assert fired == 0, f'{fired} honest readings rejected as impossible at 41 deg'
+
+    # What tilt DOES cost, and the reason the runbook asks for an overhead
+    # camera rather than merely a detectable one: the loop always arrives at
+    # the target it was given, but that target is in PROJECTED degrees, so the
+    # physical rotation it corresponds to depends on where the pointer started.
+    for tilt, allowed in ((25, 15.0), (41, 45.0)):
+        trues = [t for _, t in (through_tilt(115.0, 0.5, tilt, s)
+                                for s in range(0, 360, 15))]
+        spread = max(trues) - min(trues)
+        assert spread <= allowed, (f'{tilt} deg tilt spread the real turn by '
+                                   f'{spread:.0f} deg, expected under {allowed:.0f}')
+        print(f'at {tilt} deg tilt a 115 deg apparent target is really '
+              f'{min(trues):.0f} to {max(trues):.0f} deg, a {spread:.0f} deg spread')
 
     print('strategy self-checks passed')
