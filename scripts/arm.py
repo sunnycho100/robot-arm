@@ -195,7 +195,16 @@ def move(target, speed=120, linear=False, tol=80, check_every=0):
 
     for k in range(1, n + 1):
         s = ease(k / n)
-        step = [round(a + (b - a) * s) for a, b in zip(start, target)]
+        # Clamp every STEP, not just the target. The arm can be sitting
+        # outside the commandable range: measured on the bench, the base read
+        # 1041 against a 0-1000 limit, having been pushed past its stop. The
+        # target is checked above, but the interpolation starts from where the
+        # arm actually IS, so the first steps are still out of range and the
+        # xarm library refuses them ("position must be between 0 and 1000").
+        # A move that is perfectly safe then dies on step one, and the arm is
+        # stuck out of range with no way back through this function.
+        step = [int(np.clip(round(a + (b - a) * s), 0, 1000))
+                for a, b in zip(start, target)]
         # duration outruns the loop period on purpose: the servo is still moving
         # when the next command lands, so the steps blend instead of stair-step.
         # wait=False because wait is just a sleep, and we sleep below anyway.
