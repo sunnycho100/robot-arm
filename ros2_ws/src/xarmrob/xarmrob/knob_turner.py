@@ -53,6 +53,7 @@ for _p in (pathlib.Path.home() / 'me439' / 'pi' / 'scripts',
         sys.path.insert(0, str(_p))
         break
 import ik            # noqa: E402
+import runlog        # noqa: E402
 import strategy      # noqa: E402
 import turn_core     # noqa: E402
 
@@ -207,19 +208,30 @@ class RosBackend:
             f = k / self.speed_steps
             self._send([round(a + (b - a) * f) for a, b in zip(start, target)])
             time.sleep(SETTLE_S / 2)
-        time.sleep(SETTLE_S)
-        got = self.actual()
-        if got is None:
-            self.node.get_logger().error(
-                'no /joint_states. Is command_xarm running, and is arm.py '
-                'stopped? They cannot share the USB.')
-            return False
-        off = max(abs(g - t) for g, t in zip(got[:6], target[:6]))
-        if off > 60:
-            self.node.get_logger().warn(
-                f'stalled {off} counts short: something is in the way')
-            return False
-        return True
+
+        # Wait for the reading to SETTLE rather than sampling once. A single
+        # sample taken SETTLE_S after the last step catches the link mid-ramp:
+        # /joint_states runs at 5 Hz and the ramp publishes faster than that,
+        # so the first frame back can still describe an earlier step. That read
+        # as a 428-count stall on a move that was going perfectly well.
+        #
+        # Polling until it stops improving keeps the stall check meaningful:
+        # a real obstruction never converges, and reports the gap it stuck at.
+        off = None
+        for _ in range(8):
+            self._send(target)
+            got = self.actual()
+            if got is None:
+                self.node.get_logger().error(
+                    'no /joint_states. Is command_xarm running, and is arm.py '
+                    'stopped? They cannot share the USB.')
+                return False
+            off = max(abs(g - t) for g, t in zip(got[:6], target[:6]))
+            if off <= 60:
+                return True
+        self.node.get_logger().warn(
+            f'stalled {off} counts short of the target: something is in the way')
+        return False
 
     def squeeze(self, want_lag, step=10, cap=590):
         """Close until the servo is visibly pushing. -> (command, force, holding).
@@ -387,10 +399,18 @@ class KnobTurner(Node):
             return knob.measure(frame) if frame is not None else {}
         angles.n = 0
 
+        # Record it, in the same format and the same place turn_knob.py uses,
+        # so runs.py compares a run over topics against one over USB without
+        # caring which is which. A run that leaves no evidence cannot be used
+        # to improve the setup, which is the entire point of running it.
+        rec = runlog.Run(self.degrees, tol=self.tol, squeeze=self.force,
+                         transport='ros')
+        log.info(f'recording into {rec.dir}')
         try:
             start = angles()
             if not start:
                 raise SystemExit('no knobs seen. Run: python3 knob.py calibrate')
+            rec.start(start)
             plan = strategy.Plan(self.degrees, tol=self.tol,
                                  max_bites=self.tries)
             target_knob, done = None, 0.0
@@ -412,6 +432,7 @@ class KnobTurner(Node):
                 after = angles()
                 if rolled is None:
                     log.warn('the grip failed, so nothing was turned')
+                    rec.bite(i, bite, None, note='grip failed')
                     continue
                 if target_knob is None:
                     moved = {k: abs(strategy.wrap(after[k]['angle']
@@ -426,22 +447,30 @@ class KnobTurner(Node):
                 if plan.implausible(bite, got):
                     log.warn(f'ignoring an impossible reading: commanded '
                              f'{bite:+.0f}, pointer claims {got:+.0f}')
+                    rec.bite(i, bite, got, note='rejected as impossible')
                     continue
                 plan.record(bite, got)
+                others = {k: strategy.wrap(after[k]['angle'] - before[k]['angle'])
+                          for k in after if k != target_knob}
+                rec.bite(i, bite, got, tracking=got / bite if bite else 0.0,
+                         others=others)
                 log.info(f'commanded {bite:+.0f}, knob followed {got:+.0f} '
                          f'({got / bite * 100:.0f}% tracking)')
             end = angles()
+            out = rec.finish(end, knob=target_knob)
             if target_knob:
-                final = strategy.wrap(end[target_knob]['angle']
-                                      - start[target_knob]['angle'])
                 log.info(f'{target_knob}: asked {self.degrees:+.0f}, got '
-                         f'{final:+.0f}, error {self.degrees - final:+.0f} deg')
+                         f'{out["final"]:+.0f}, error {out["error"]:+.0f} deg  '
+                         f'{"WITHIN TOLERANCE" if out["ok"] else "MISSED"}')
+            log.info(f'run recorded in {rec.dir}')
         finally:
             if cam is not None:
                 cam.release()
             self.backend.release()
             self.backend.park()
             self.backend.stop()
+            if 'end' not in rec.log:
+                rec.finish()          # a run that died still leaves its trace
 
 
 def main(args=None):

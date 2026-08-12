@@ -33,6 +33,9 @@ STAGES = [
      'never overshooting'),
     ('regrip',  'scripts', 'regrip.py',
      'the search recovers a mis-taught pose, and stops rather than wandering'),
+    ('runlog',  'scripts', 'runlog.py',
+     'runs record themselves in one schema from either transport, readable '
+     'mid-run and wrapped correctly'),
     ('turncore', 'scripts', 'turn_core.py',
      'the shared grip-and-turn sequence: searches, reuses the offset, and '
      'never rolls the wrist while holding nothing'),
