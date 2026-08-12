@@ -70,7 +70,7 @@ class Session:
     def __init__(self, outdir, fps=10.0):
         self.dir = outdir
         os.makedirs(outdir, exist_ok=True)
-        self.cam = cv2.VideoCapture(0)
+        self.cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
         self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
         ok, frame = False, None

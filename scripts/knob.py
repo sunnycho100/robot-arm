@@ -187,6 +187,26 @@ def find_knobs(frame, rejects=None):
                       'skirt_r': int(round(cap_r * REACH)),
                       'roundness': min(w, h) / max(w, h)})
 
+    # Knobs on one pedal are the same size, so a blob whose cap is nothing
+    # like the others is not one of them. Seen live on the bench: three real
+    # caps at 46, 48 and 48 px plus a stray 18 px detection on the robot's own
+    # base, which every other test here accepts because it IS round, bright,
+    # unsaturated and ringed by dark. Size is the thing that separates them.
+    #
+    # The window is wide on purpose. Perspective only shrinks the far knob by
+    # about 5 percent at this working distance (24 mm of spacing against
+    # 300 mm of range, even well off-axis), so anything past a third is not
+    # foreshortening, it is a different object.
+    if len(found) > 2:
+        med = float(np.median([f['cap_r'] for f in found]))
+        keep = [f for f in found if 0.6 * med <= f['cap_r'] <= 1.7 * med]
+        for f in found:
+            if f not in keep:
+                toss(int(np.pi * f['cap_r'] ** 2),
+                     f'cap {2*f["cap_r"]} px is nothing like the others '
+                     f'({2*med:.0f} px): not a knob on this pedal')
+        found = keep
+
     # Name them along whichever image axis the row actually runs down.
     #
     # This used to sort by cy unconditionally, on the reasoning that the knobs
@@ -483,6 +503,17 @@ def selftest():
     close = [w for _, w in rejects if 'TOO CLOSE' in w]
     assert close, f'nothing was blamed on the camera being close: {rejects[:3]}'
     print(f'  caps 4x too big are rejected, and {len(close)} of them say why')
+
+    # A stray detection of the WRONG SIZE must be dropped. This is the robot's
+    # own base furniture seen live: round, bright, unsaturated, dark-ringed,
+    # and a third the size of a real cap.
+    stray = np.vstack([pedal(want), decoy()])
+    cv2.circle(stray, (60, 60), 8, (190, 192, 195), -1)
+    cv2.circle(stray, (60, 60), 13, (20, 20, 22), 3)
+    got = find_knobs(cv2.GaussianBlur(stray, (5, 5), 0))
+    assert len(got) == 3, (f'found {len(got)} with a small round impostor in '
+                           f'frame: {[2*v["cap_r"] for v in got.values()]}')
+    print('  an impostor a third the size of a real cap is dropped')
 
     # Names have to survive a frame of noise, in EITHER orientation. A camera
     # beyond the pedal sees the row lie flat across the image, and a sort that

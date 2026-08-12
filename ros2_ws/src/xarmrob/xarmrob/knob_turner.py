@@ -375,7 +375,14 @@ class KnobTurner(Node):
 
         cam, replay = None, []
         if str(self.camera).lstrip('-').isdigit():
-            cam = cv2.VideoCapture(int(self.camera))
+            cam = cv2.VideoCapture(int(self.camera), cv2.CAP_V4L2)
+            # CAP_V4L2 explicitly. OpenCV on the Pi picks GStreamer by default,
+            # which goes through pipewire, and HOLDING that open deadlocks:
+            # five threads in futex_wait, no frames, no error, no timeout. A
+            # one-shot grab survives because it exits before the deadlock
+            # bites; a run that keeps the camera open does not. Measured on the
+            # bench: default backend hung before the first read, V4L2 gave
+            # 20/20 frames at 1280x960.
             cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
             for _ in range(8):
