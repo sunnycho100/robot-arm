@@ -238,7 +238,15 @@ class CommandXArm(Node):
         jt04 = self.f_interp_cmd_to_rad_45_params(cmd_all[4])
         jt05 = self.f_interp_cmd_to_rad_56_params(cmd_all[5])
         jt06 = self.f_interp_cmd_to_rad_gripper_params(cmd_all[6])
-        jt_all = [jt00, jt01, jt02, jt03, jt04, jt05, jt06]
+        # float(), and it is load-bearing. interp1d returns a numpy 0-d
+        # ndarray, and rclpy asserts that JointState.position holds Python
+        # floats, so without this the publish in set_joint_state() raises on
+        # every timer tick and /joint_states is NEVER published. The except
+        # there logs it and carries on, so the node looks healthy while the
+        # only feedback edge in the graph is dead. Verified on ROS 2 Humble:
+        # numpy scalars rejected, float() accepted.
+        jt_all = [float(jt00), float(jt01), float(jt02), float(jt03),
+                  float(jt04), float(jt05), float(jt06)]
         return jt_all
         
     # Function to command any Hiwonder Bus Servo with a given command

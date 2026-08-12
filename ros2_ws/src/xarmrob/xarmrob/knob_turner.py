@@ -51,12 +51,16 @@ import turn_core     # noqa: E402
 
 JOINT_NAMES = ['cmd00', 'cmd01', 'cmd02', 'cmd03', 'cmd04', 'cmd05', 'cmd06']
 
-# command_xarm converts counts to radians with interp1d over these tables and
-# will RAISE outside them, which kills the /joint_states publish and with it
-# our only feedback. arm.py opens the jaws to 410, which is outside. So the
-# gripper is clamped here rather than discovering that at the bench.
-GRIP_CMD_RANGE = (440, 610)
-GRIP_ANGLE_RANGE = np.radians([0.0, 90.0])
+# The joint maps are NOT hardcoded here, and that is the whole point. They are
+# read from this node's own ROS parameters, which the launch file fills from
+# the same robot_xarm_info.yaml that command_xarm is given. Hardcoding them
+# means guessing, and guessing was wrong twice in one afternoon: command_xarm's
+# built-in defaults disagree with the yaml on joint_01 ([880,500,120] against
+# [120,500,880], a mirrored base) and on the gripper ([440,610] against
+# [90,610], which is 74 counts of error and made arm.py's open width look
+# out of range when it is not). Whatever command_xarm was launched with is
+# what we must convert with, so we ask for it rather than assume it.
+JOINTS = ('01', '12', '23', '34', '45', '56')
 
 STALE_S = 1.0        # a joint reading older than this is not evidence
 SETTLE_S = 0.45      # command_frequency is 5 Hz, so allow two publishes
@@ -65,17 +69,41 @@ SETTLE_S = 0.45      # command_frequency is 5 Hz, so allow two publishes
 class RosBackend:
     """turn_core's eight calls, spoken as topics instead of USB."""
 
-    def __init__(self, node, taught_counts, speed_steps=14):
+    def __init__(self, node, taught_counts, maps, grip_map, speed_steps=14):
         self.node = node
         self._taught = list(taught_counts)
+        self.maps = maps                 # joint -> (degrees, counts)
+        self.grip_map = grip_map         # (radians, counts)
         self.speed_steps = speed_steps
         self.commanded = list(taught_counts)
         self._actual = None
         self._stamp = 0.0
         self._lock = threading.Lock()
+        self._sent_at = 0.0
         self.pub = node.create_publisher(ME439JointCommand,
                                          '/bus_servo_commands', 1)
         node.create_subscription(JointState, '/joint_states', self._on_state, 1)
+        # Own the spinning. Callers of this class run a blocking sequence of
+        # moves and squeezes, so nobody is left to pump callbacks; and a
+        # caller that spins as well would be racing spin against spin_once.
+        self._stop = threading.Event()
+        self._spinner = threading.Thread(target=self._spin_forever, daemon=True)
+        self._spinner.start()
+
+    def _spin_forever(self):
+        # spin_once in a loop rather than spin(), so stop() can end it. Calling
+        # destroy_node() underneath a live spin() aborts the process on the way
+        # out ("terminate called without an active exception"), which at the
+        # bench looks like a crash and skips whatever cleanup came after it.
+        while not self._stop.is_set():
+            try:
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+            except Exception:
+                return
+
+    def stop(self):
+        self._stop.set()
+        self._spinner.join(timeout=1.0)
 
     # ---- feedback ------------------------------------------------------
     def _on_state(self, msg):
@@ -86,34 +114,63 @@ class RosBackend:
         with self._lock:
             self._actual, self._stamp = counts, time.time()
 
-    def actual(self, timeout=2.0):
-        """The servos' real positions, or None if nobody is publishing them."""
+    def actual(self, timeout=2.0, fresh=True):
+        """The servos' real positions, or None if nobody is publishing them.
+
+        `fresh` demands a reading that arrived AFTER the last command went out,
+        and it is not a nicety. /joint_states runs at 5 Hz while a squeeze step
+        settles in 0.45 s, so without this the reader can hand back a frame
+        recorded BEFORE the command it is supposed to be measuring, and the
+        grip force is then computed against the previous pose. Caught by
+        sending six poses through a live graph and finding they came back up to
+        318 counts out; with this, zero.
+        """
         end = time.time() + timeout
         while time.time() < end:
             with self._lock:
-                if self._actual and time.time() - self._stamp < STALE_S:
+                new_enough = (self._stamp > self._sent_at if fresh
+                              else time.time() - self._stamp < STALE_S)
+                if self._actual and new_enough:
                     return list(self._actual)
-            rclpy.spin_once(self.node, timeout_sec=0.05)
+            time.sleep(0.02)
         return None
 
     # ---- unit conversion ----------------------------------------------
     @staticmethod
-    def angles_to_counts(angles_rad):
-        """/joint_states radians -> servo counts, using arm.py's own maps."""
-        A = ik._arm()
-        out = []
-        for j, a in zip(A._JOINTS, angles_rad[:6]):
-            deg, cmd = A._MAP[j]
-            out.append(float(np.interp(np.degrees(a), *(
-                (deg, cmd) if deg[0] < deg[-1] else (deg[::-1], cmd[::-1])))))
-        out.append(float(np.interp(angles_rad[6], GRIP_ANGLE_RANGE,
-                                   GRIP_CMD_RANGE)))
+    def _interp(x, xs, ys):
+        """np.interp needs an increasing x, and half these tables descend."""
+        xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+        if xs[0] > xs[-1]:
+            xs, ys = xs[::-1], ys[::-1]
+        return float(np.interp(x, xs, ys))
+
+    def angles_to_counts(self, angles_rad):
+        """/joint_states radians -> servo counts, by command_xarm's own maps."""
+        out = [self._interp(np.degrees(a), self.maps[j][0], self.maps[j][1])
+               for j, a in zip(JOINTS, angles_rad[:6])]
+        out.append(self._interp(angles_rad[6], self.grip_map[0],
+                                self.grip_map[1]))
         return [int(round(c)) for c in out]
+
+    def counts_to_angles(self, counts):
+        """The inverse, which is what command_xarm publishes."""
+        out = [np.radians(self._interp(c, self.maps[j][1], self.maps[j][0]))
+               for j, c in zip(JOINTS, counts[:6])]
+        out.append(self._interp(counts[6], self.grip_map[1], self.grip_map[0]))
+        return out
+
+    @property
+    def grip_limits(self):
+        lo, hi = min(self.grip_map[1]), max(self.grip_map[1])
+        return int(lo), int(hi)
 
     # ---- motion --------------------------------------------------------
     def _send(self, counts):
         counts = [int(np.clip(c, 0, 1000)) for c in counts]
-        counts[6] = int(np.clip(counts[6], *GRIP_CMD_RANGE))
+        # Outside the gripper table command_xarm's interp1d raises, which kills
+        # the /joint_states publish and with it our only feedback. The bound is
+        # whatever the table says, not a constant typed here.
+        counts[6] = int(np.clip(counts[6], *self.grip_limits))
         msg = ME439JointCommand()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.name = JOINT_NAMES
@@ -121,6 +178,7 @@ class RosBackend:
         msg.enable = True
         self.pub.publish(msg)
         self.commanded = counts
+        self._sent_at = time.time()
         return counts
 
     def taught(self):
@@ -164,6 +222,7 @@ class RosBackend:
         a count, because a stalled servo is what browns out the bus.
         """
         c = self.counts()[6]
+        cap = min(cap, self.grip_limits[1])
         lag = peak = 0
         slipped = False
         for _ in range(30):
@@ -187,7 +246,7 @@ class RosBackend:
         time.sleep(SETTLE_S)
         return True
 
-    def release(self, to=GRIP_CMD_RANGE[0]):
+    def release(self, to=410):
         self._send(self.commanded[:6] + [to])
         time.sleep(SETTLE_S)
         return True
@@ -227,8 +286,49 @@ class KnobTurner(Node):
         if pose not in poses:
             raise SystemExit(f'no taught pose {pose!r}. Teach one first: '
                              f'python3 arm.py teach {pose}')
-        self.backend = RosBackend(self, A.counts_of(poses[pose]))
+        self.backend = RosBackend(self, A.counts_of(poses[pose]),
+                                  *self.calibration())
         self.offset = np.zeros(2)
+
+    def calibration(self):
+        """The joint maps, from OUR parameters, filled by the same yaml.
+
+        Declared with command_xarm's own defaults so a bare `ros2 run` still
+        starts. It will be WRONG in the same way command_xarm is wrong in that
+        case, which is the point: both nodes agree, right or wrong, instead of
+        disagreeing silently. Launch with the params file and both are right.
+        """
+        defaults = {
+            '01': ([-90, 0, 90], [880, 500, 120]),
+            '12': ([-180, -90, 0], [870, 500, 120]),
+            '23': ([0, 90, 180], [140, 500, 880]),
+            '34': ([-112, -90, 0, 90, 112], [1000, 890, 505, 140, 0]),
+            '45': ([-112, -90, 0, 90, 112], [0, 120, 490, 880, 1000]),
+            '56': ([-112, -90, 0, 90, 112], [0, 120, 500, 880, 1000]),
+        }
+        maps, defaulted = {}, []
+        for j in JOINTS:
+            deg = self.declare_parameter(
+                f'rotational_angles_for_mapping_joint_{j}',
+                [float(x) for x in defaults[j][0]]).value
+            cmd = self.declare_parameter(
+                f'bus_servo_cmd_for_mapping_joint_{j}',
+                [int(x) for x in defaults[j][1]]).value
+            maps[j] = (list(deg), list(cmd))
+            if list(cmd) == list(defaults[j][1]):
+                defaulted.append(j)
+        gdeg = self.declare_parameter('rotational_angles_for_mapping_gripper',
+                                      [0.0, 90.0]).value
+        gcmd = self.declare_parameter('bus_servo_cmd_for_mapping_gripper',
+                                      [90, 610]).value
+        grip = (list(np.radians(gdeg)), list(gcmd))
+        if len(defaulted) == len(JOINTS):
+            self.get_logger().warn(
+                'every joint map came from the built-in defaults, so no params '
+                'file was passed. command_xarm is then almost certainly running '
+                'on ITS defaults too, where joint_01 is mirrored against the '
+                'yaml. Launch with knob_turner.launch.py instead.')
+        return maps, grip
 
     def run(self):
         log = self.get_logger()
@@ -305,6 +405,7 @@ class KnobTurner(Node):
             cam.release()
             self.backend.release()
             self.backend.park()
+            self.backend.stop()
 
 
 def main(args=None):
