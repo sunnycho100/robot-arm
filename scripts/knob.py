@@ -70,7 +70,7 @@ the pedal a little off-axis, so this is a projection of the true knob angle. Goo
 for "did it move, and roughly how far", which is what the run needs. Not a
 calibrated angle, do not quote it as one.
 """
-import json, os, sys
+import json, os, sys, time
 import numpy as np, cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -300,18 +300,25 @@ def grab_frames(n=9, index=0):
     CAP_V4L2 explicitly: OpenCV here defaults to GStreamer via pipewire, and
     holding that open deadlocks with no error and no timeout.
     """
-    cam = cv2.VideoCapture(index, cv2.CAP_V4L2)
-    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
-    out = []
-    for i in range(n + 6):
-        ok, f = cam.read()
-        if ok and i >= 6:                          # let exposure settle first
-            out.append(f)
-    cam.release()
-    if not out:
-        raise SystemExit('no frames from the camera')
-    return out
+    # Opening and closing this C270 repeatedly makes it sulk: every read comes
+    # back as a 10 s select() timeout until it is reopened. One retry after a
+    # pause turns that into a hiccup instead of an aborted run, which matters
+    # because a look-move-look loop opens the camera once per iteration.
+    for attempt in range(2):
+        cam = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+        out = []
+        for i in range(n + 6):
+            ok, f = cam.read()
+            if ok and i >= 6:                      # let exposure settle first
+                out.append(f)
+        cam.release()
+        if out:
+            return out
+        time.sleep(2.0)
+    raise SystemExit('no frames from the camera, twice. Something else is '
+                     'holding /dev/video0, or the USB link has dropped')
 
 
 def _pointer(V, S, cx, cy, cap_r):
@@ -388,7 +395,7 @@ def annotate(frame, found, path=None):
 
 
 def grab():
-    cam = cv2.VideoCapture(0)
+    cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
     ok = False

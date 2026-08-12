@@ -111,7 +111,7 @@ def teach(name, target):
     knobs = json.load(open(knob.CONFIG)) if os.path.exists(knob.CONFIG) else {}
     base = json.load(open(BASE)) if os.path.exists(BASE) else None
 
-    cam = cv2.VideoCapture(0)
+    cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
     state = {'frame': None}
@@ -253,7 +253,7 @@ def main():
         return
 
     # watch: hold the camera and stream, so the arm can be posed by hand
-    cam = cv2.VideoCapture(0)
+    cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
     cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
     state = {'frame': None}

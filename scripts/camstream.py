@@ -22,7 +22,7 @@ import cv2
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 BOX = 300                       # half-width of the centre region we score
 
-cam = cv2.VideoCapture(0)
+cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
 lock = threading.Lock()

@@ -12,7 +12,7 @@ import traceback
 from example_interfaces.msg import String
 
 #Setup camera capture and resolution
-camera = cv2.VideoCapture(0)
+camera = cv2.VideoCapture(0, cv2.CAP_V4L2)
 camera.set(cv2.CAP_PROP_FRAME_WIDTH,1280);
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT,960);
 

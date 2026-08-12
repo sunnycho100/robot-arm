@@ -91,9 +91,15 @@ def check_joints(A):
     for idx, name in enumerate(['base', 'shoulder', 'elbow', 'forearm',
                                 'wrist pitch', 'wrist roll']):
         target = list(base)
-        target[idx] = int(np.clip(base[idx] + 60, 120, 880))
-        if target[idx] == base[idx]:
-            report('WARN', f'{name}: already at its limit, not tested')
+        # Move AWAY from whichever limit is nearer. Always adding +60 clamps to
+        # a 2-count nudge for a joint already parked near 880, which is inside
+        # the servo deadband, and the joint then fails a test it never got: the
+        # wrist pitch sits at 878 in the taught pose and read as "stalled".
+        step_by = 60 if base[idx] < 500 else -60
+        target[idx] = int(np.clip(base[idx] + step_by, 120, 880))
+        if abs(target[idx] - base[idx]) < 20:
+            report('WARN', f'{name}: no room to test (at {base[idx]}, '
+                           f'limits 120-880)')
             continue
         A.move(target, speed=120)
         time.sleep(0.2)
@@ -146,7 +152,7 @@ def check_camera(A):
         import cv2
     except ImportError:
         return report('FAIL', 'no OpenCV on this machine', 'pip install opencv-contrib-python')
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
     ok_read, frame = cap.read()
@@ -163,7 +169,11 @@ def check_camera(A):
         report('WARN', f'sharpness {sharp:.0f} is low',
                'focus the lens, or add light; the knob finder needs the cap edge')
 
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cv'))
+    # ../cv in the repo, ./cv on the Pi, where the scripts are deployed flat
+    # into the home directory rather than as a checkout.
+    here = os.path.dirname(os.path.abspath(__file__))
+    for rel in ('../cv', 'cv'):
+        sys.path.insert(0, os.path.join(here, rel))
     try:
         import knobs2
         import compat
@@ -172,17 +182,34 @@ def check_camera(A):
                       'the arm can still be driven from taught poses')
 
     ks = knobs2.find(frame)
-    if len(ks) >= 2:
-        report('PASS', f'knob finder sees {len(ks)} knobs '
-                       f'{[round(k["conf"], 2) for k in ks]}')
-    else:
-        report('WARN', f'knob finder sees only {len(ks)}',
-               'usually lighting: the metal cap has to be distinguishable from '
-               'the orange body. Fix the light, not the thresholds')
+    report('PASS' if len(ks) >= 2 else 'WARN',
+           f'old single-frame finder sees {len(ks)} '
+           f'{[round(k["conf"], 2) for k in ks]}')
 
-    corners, ids, which = compat.detect_any(frame)
+    # The single-frame count above is what the demo used to trust, and on this
+    # bench it reports five knobs on a three-knob pedal. Report the consensus
+    # finder next to it: same frames, but only the detections that hold still.
+    import knob as knob_new
+    frames = knob_new.grab_frames(9)
+    stable, flickering = (knob_new.find_knobs_stable(frames) if frames
+                          else ({}, []))
+    if len(stable) == 3:
+        report('PASS', f'consensus over {len(frames)} frames: {len(stable)} knobs '
+                       f'{sorted(stable)}')
+    else:
+        report('WARN', f'consensus over {len(frames)} frames: {len(stable)} knobs, '
+                       f'expected 3 ({len(flickering)} flickering)',
+               'usually lighting or framing: run aimlive.py and move the camera '
+               'until the banner stays green')
+
+    seen, which = set(), None
+    for f in (frames or [frame]):
+        _, ids, w = compat.detect_any(f)
+        seen.update(int(i) for i in ids)
+        which = w or which
+    ids = sorted(seen)
     if len(ids):
-        report('PASS', f'ArUco: {which} ids {sorted(ids)}')
+        report('PASS', f'ArUco: {which} ids {ids}')
     else:
         report('WARN', 'no ArUco tag detected',
                'the old tag is torn; print fresh ones. Without tags the pedal '
