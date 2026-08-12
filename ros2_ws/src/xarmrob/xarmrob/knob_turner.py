@@ -39,6 +39,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import JointState
 from xarmrob_interfaces.msg import ME439JointCommand
 
@@ -286,6 +287,11 @@ class KnobTurner(Node):
         self.tries = self.declare_parameter('bites', 4).value
         self.force = self.declare_parameter('squeeze', 70).value
         pose = self.declare_parameter('pose', 'grip0').value
+        # A camera index for the real thing, or a path to an image or a folder
+        # of them to replay. Replay is not test scaffolding: it is how a run
+        # gets rehearsed without the arm in front of you, and how a recorded
+        # failure gets re-examined afterwards.
+        self.camera = self.declare_parameter('camera', '0').value
 
         A = ik._arm()
         poses = A.poses()
@@ -312,21 +318,26 @@ class KnobTurner(Node):
             '45': ([-112, -90, 0, 90, 112], [0, 120, 490, 880, 1000]),
             '56': ([-112, -90, 0, 90, 112], [0, 120, 500, 880, 1000]),
         }
+        # dynamic_typing, because the yaml writes these as bare integers
+        # ([-90,0,90]) and a float default declares the parameter DOUBLE_ARRAY,
+        # which rclpy then refuses to override with an INTEGER_ARRAY. The node
+        # died on startup with exactly that. The values are interpolation
+        # tables; whether they arrive as ints or floats is not our business.
+        loose = ParameterDescriptor(dynamic_typing=True)
+
+        def table(name, fallback):
+            v = self.declare_parameter(name, fallback, loose).value
+            return [float(x) for x in v]
+
         maps, defaulted = {}, []
         for j in JOINTS:
-            deg = self.declare_parameter(
-                f'rotational_angles_for_mapping_joint_{j}',
-                [float(x) for x in defaults[j][0]]).value
-            cmd = self.declare_parameter(
-                f'bus_servo_cmd_for_mapping_joint_{j}',
-                [int(x) for x in defaults[j][1]]).value
-            maps[j] = (list(deg), list(cmd))
-            if list(cmd) == list(defaults[j][1]):
+            deg = table(f'rotational_angles_for_mapping_joint_{j}', defaults[j][0])
+            cmd = table(f'bus_servo_cmd_for_mapping_joint_{j}', defaults[j][1])
+            maps[j] = (deg, cmd)
+            if cmd == [float(x) for x in defaults[j][1]]:
                 defaulted.append(j)
-        gdeg = self.declare_parameter('rotational_angles_for_mapping_gripper',
-                                      [0.0, 90.0]).value
-        gcmd = self.declare_parameter('bus_servo_cmd_for_mapping_gripper',
-                                      [90, 610]).value
+        gdeg = table('rotational_angles_for_mapping_gripper', [0, 90])
+        gcmd = table('bus_servo_cmd_for_mapping_gripper', [90, 610])
         grip = (list(np.radians(gdeg)), list(gcmd))
         if len(defaulted) == len(JOINTS):
             self.get_logger().warn(
@@ -344,19 +355,37 @@ class KnobTurner(Node):
                 '  ros2 run xarmrob command_xarm\n'
                 'and make sure scripts/arm.py is NOT running: one USB device, '
                 'one controller.')
-        # The camera is imported late and only if it is needed, so a run that
-        # is only exercising motion still starts on a machine without OpenCV.
+        # Imported late and only when needed, so a run that is only exercising
+        # motion still starts on a machine without OpenCV.
         import knob
         import cv2
-        cam = cv2.VideoCapture(0)
-        cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
-        for _ in range(8):
-            cam.read()
+        import glob as _glob
+
+        cam, replay = None, []
+        if str(self.camera).lstrip('-').isdigit():
+            cam = cv2.VideoCapture(int(self.camera))
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+            for _ in range(8):
+                cam.read()
+        else:
+            path = pathlib.Path(self.camera)
+            replay = ([str(path)] if path.is_file()
+                      else sorted(_glob.glob(str(path / '*'))))
+            if not replay:
+                raise SystemExit(f'no frames to replay at {self.camera!r}')
+            log.info(f'replaying {len(replay)} frame(s) from {self.camera}')
 
         def angles():
-            ok, frame = cam.read()
-            return knob.measure(frame) if ok else {}
+            if cam is not None:
+                ok, frame = cam.read()
+                return knob.measure(frame) if ok else {}
+            # Walk the folder, holding on the last frame once it runs out, so a
+            # loop that reads more often than there are frames still finishes.
+            frame = cv2.imread(replay[min(angles.n, len(replay) - 1)])
+            angles.n += 1
+            return knob.measure(frame) if frame is not None else {}
+        angles.n = 0
 
         try:
             start = angles()
@@ -408,7 +437,8 @@ class KnobTurner(Node):
                 log.info(f'{target_knob}: asked {self.degrees:+.0f}, got '
                          f'{final:+.0f}, error {self.degrees - final:+.0f} deg')
         finally:
-            cam.release()
+            if cam is not None:
+                cam.release()
             self.backend.release()
             self.backend.park()
             self.backend.stop()
