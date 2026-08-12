@@ -156,8 +156,19 @@ def find_knobs(frame, rejects=None):
     between a two-minute fix and an afternoon.
     """
     white, dark = _masks(frame)
+    # Open the mask before finding blobs. Seen obliquely, the white pointer
+    # stripe on the skirt front touches the cap top and the two become ONE
+    # blob, 42x66 instead of 38x38, which then fails the roundness and
+    # solidity gates that are there to catch exactly that shape. The stripe
+    # measured 10 px wide on the bench, so the disk is just past that: an
+    # opening erases anything that cannot contain its kernel, which removes
+    # the stripe at ANY pointer rotation and leaves a 36 px cap intact. The
+    # pointer is not lost, _pointer() reads it from the V channel directly.
+    white = cv2.morphologyEx(white.astype(np.uint8), cv2.MORPH_OPEN,
+                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                                       (11, 11)))
     n, lab, stats, cent = cv2.connectedComponentsWithStats(
-        white.astype(np.uint8), connectivity=8)
+        white, connectivity=8)
 
     def toss(a, why):
         if rejects is not None and a >= CAP_AREA[0] // 2:
@@ -185,8 +196,19 @@ def find_knobs(frame, rejects=None):
         cap_r = int(round(np.sqrt(a / np.pi)))
         # The cap must be ringed by black skirt just outside it. Sampled close in,
         # because further out is the pedal, and on a knob near the edge, the table.
-        if np.mean([_at(dark, cx, cy, cap_r + 3, d) for d in range(0, 360, 5)]) < 0.5:
-            toss(a, 'no black skirt around it, so it is not a knob cap')
+        # Judged on the best three-quarter arc, not the full circle: seen
+        # obliquely, the arc behind the cap lands past the knob on whatever the
+        # background is, and the arc in front crosses the white pointer, so a
+        # perfectly real knob reads only ~0.6 on the full ring from a view that
+        # shows the fingers. A knob still owns most of its surround from any
+        # angle; a glint on the table owns none of it.
+        ring = [_at(dark, cx, cy, cap_r + 3, d) for d in range(0, 360, 5)]
+        k = len(ring) * 3 // 4
+        best = max(sum(ring[(j + m) % len(ring)] for m in range(k))
+                   for j in range(len(ring))) / k
+        if best < 0.5:
+            toss(a, f'no black skirt around it (best arc {best:.0%}), '
+                    f'so it is not a knob cap')
             continue
         found.append({'cx': cx, 'cy': cy, 'cap_r': cap_r,
                       'skirt_r': int(round(cap_r * REACH)),
@@ -645,17 +667,22 @@ def selftest():
                     f'not stable and the run would re-read the wrong knob')
     print('  knob names hold still under noise, row or column')
 
-    # Pin the fact that cost an hour: roundness is NOT cos(tilt). The pointer
-    # is as bright as the cap and merges with it, so the bounding box is
-    # stretched even head-on. Anyone tempted to raise WANT_ROUND to grade the
-    # camera angle should fail here first.
+    # The disk opening cuts the pointer out of the blob, so a head-on cap now
+    # measures nearly circular, where the old cap-plus-pointer blob read 0.72.
+    # This pins that the opening keeps working; if it regresses, the pointer
+    # merges back in and the roundness numbers change meaning again.
+    #
+    # Roundness is therefore closer to cos(tilt) than it used to be, but
+    # WANT_ROUND stays LOW on purpose: the bench camera now looks at the pedal
+    # obliquely BY CHOICE, because that is the view that also shows the
+    # fingers on the knob, and real knobs from there read ~0.87. A threshold
+    # that graded views by roundness would reject the view we want.
     head_on = pedal([0.0, 0.0, 0.0])
     worst_round = min(v['roundness'] for v in find_knobs(head_on).values())
-    assert worst_round < 0.95, (f'a head-on knob measured {worst_round:.2f} '
-                                f'round, so the pointer no longer merges with '
-                                f'the cap and this metric may have become '
-                                f'usable as a tilt gauge. Re-derive before '
-                                f'trusting it.')
+    assert worst_round > 0.85, (f'a head-on knob measured {worst_round:.2f} '
+                                f'round, so the pointer is merging into the '
+                                f'cap blob again: the opening in find_knobs '
+                                f'has stopped doing its job.')
     assert WANT_ROUND < worst_round, (
         f'WANT_ROUND is {WANT_ROUND}, but a knob seen straight on only reads '
         f'{worst_round:.2f}. calibrate would call a perfect view "squashed".')
