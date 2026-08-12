@@ -256,6 +256,64 @@ def _saved():
     return None
 
 
+def find_knobs_stable(frames, min_frac=0.7, tol=25):
+    """Knobs that are in the SAME PLACE across several frames.
+
+    A real knob does not come and go. Measured live on the bench, 30 frames of
+    a static scene: the three real caps were found in 30 of 30, and an impostor
+    on the robot's furniture in 3. Nothing about a single frame separates them,
+    because the impostor genuinely is round, bright, unsaturated, dark-ringed
+    and 56 px against the real 46 to 48, which is well inside any sane size
+    window. Persistence separates them completely.
+
+    This is deliberately not a geometric rule. "The knobs are in a row" is the
+    tempting one and it is false on the very pedal in front of us: a DS-1's
+    three knobs sit in a TRIANGLE. Persistence assumes nothing about the layout,
+    the colour of the panel or the number of knobs, so it survives the move to
+    an amplifier.
+    """
+    votes = []                                    # [[centre, count, sample], ...]
+    for frame in frames:
+        for f in find_knobs(frame).values():
+            for v in votes:
+                if abs(v[0][0] - f['cx']) < tol and abs(v[0][1] - f['cy']) < tol:
+                    v[1] += 1
+                    break
+            else:
+                votes.append([(f['cx'], f['cy']), 1, f])
+    need = max(2, int(round(min_frac * len(frames))))
+    kept = [v[2] for v in votes if v[1] >= need]
+    kept.sort(key=lambda f: f['cy'] if _spread(kept, 'cy') >= _spread(kept, 'cx')
+              else f['cx'])
+    return ({f'knob{i+1}': f for i, f in enumerate(kept)},
+            [(v[0], v[1]) for v in votes if v[1] < need])
+
+
+def _spread(items, key):
+    return (max(f[key] for f in items) - min(f[key] for f in items)
+            if items else 0)
+
+
+def grab_frames(n=9, index=0):
+    """n frames from the camera, for a consensus that needs more than one.
+
+    CAP_V4L2 explicitly: OpenCV here defaults to GStreamer via pipewire, and
+    holding that open deadlocks with no error and no timeout.
+    """
+    cam = cv2.VideoCapture(index, cv2.CAP_V4L2)
+    cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+    out = []
+    for i in range(n + 6):
+        ok, f = cam.read()
+        if ok and i >= 6:                          # let exposure settle first
+            out.append(f)
+    cam.release()
+    if not out:
+        raise SystemExit('no frames from the camera')
+    return out
+
+
 def _pointer(V, S, cx, cy, cap_r):
     """Score every angle by the length of its bounded bright run. Returns profile.
 
@@ -409,10 +467,21 @@ def main():
                               for a in sys.argv[1:] if a.startswith(f'--{k}=')), d)
     shot = flag('shot', os.path.expanduser('~/images/knobs.jpg'))
     cmd = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('--') else ''
-    frame = grab()
+    frame = grab() if cmd != 'calibrate' else None
 
     if cmd == 'calibrate':
-        knobs = check(frame)
+        # Several frames, not one. Whatever calibrate writes is what every
+        # later run trusts without re-detecting, so a one-frame impostor here
+        # becomes a knob for the rest of the session.
+        frames = grab_frames(9)
+        frame = frames[-1]
+        knobs, rejected = find_knobs_stable(frames)
+        if rejected:
+            print(f'dropped {len(rejected)} flickering detection(s), '
+                  f'not present in enough frames:')
+            for (x, y), c in sorted(rejected, key=lambda r: -r[1]):
+                print(f'    ({x},{y}) seen in {c}/{len(frames)} frames')
+        check(frame)
         if knobs:
             json.dump(knobs, open(CONFIG, 'w'), indent=1)
             print(f'saved {len(knobs)} knobs to {CONFIG}')
@@ -503,6 +572,24 @@ def selftest():
     close = [w for _, w in rejects if 'TOO CLOSE' in w]
     assert close, f'nothing was blamed on the camera being close: {rejects[:3]}'
     print(f'  caps 4x too big are rejected, and {len(close)} of them say why')
+
+    # Persistence across frames is what separates a knob from an impostor that
+    # is otherwise perfect. Measured on the bench: real caps 30/30 frames, the
+    # impostor 3/30, and nothing in a SINGLE frame told them apart.
+    good = pedal(want)
+    ghost = good.copy()
+    cv2.circle(ghost, (150, 300), 24, (188, 190, 192), -1)
+    cv2.circle(ghost, (150, 300), 32, (18, 18, 20), 5)
+    ghost = cv2.GaussianBlur(ghost, (5, 5), 0)
+    assert len(find_knobs(ghost)) == 4, 'the impostor should fool a single frame'
+    frames = [good] * 7 + [ghost] * 3          # present in 3 of 10, like the bench
+    kept, dropped = find_knobs_stable(frames)
+    assert len(kept) == 3, f'consensus kept {len(kept)}, should be 3'
+    assert len(dropped) == 1 and dropped[0][1] == 3, dropped
+    # and it must not throw away a real knob just because one frame dropped it
+    kept2, _ = find_knobs_stable([good] * 8 + [np.zeros_like(good)] * 2)
+    assert len(kept2) == 3, f'consensus lost a real knob: {len(kept2)}'
+    print('  a detection in 3 frames of 10 is dropped; real knobs survive 2 bad frames')
 
     # A stray detection of the WRONG SIZE must be dropped. This is the robot's
     # own base furniture seen live: round, bright, unsaturated, dark-ringed,
