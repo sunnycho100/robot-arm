@@ -233,10 +233,13 @@ def move(target, speed=120, linear=False, tol=80, check_every=0):
 # ---- poses. Entries are {'counts': [...], 'tag': {...} or None}. Bare lists
 # ---- from before vision existed still load.
 
-CAP = 590           # fully closed calibrates to 610; stay under it
+CAP = 605           # fully closed calibrates to 610; stay just under it. Was
+                    # 590, and every real squeeze ended pinned there at ~73
+                    # counts of force with the knob still slipping: the limit
+                    # was choosing the grip force, not the caller.
 HOLD_MIN = 30       # counts of force that constitute a real grip, not air
 SLIP_DROP = 12      # force falling this far below its own peak means it escaped
-GRIP_FORCE = 70     # the force the real run uses, so teach must test at it too
+GRIP_FORCE = 85     # the force the real run uses, so teach must test at it too
 
 
 def squeeze(want_lag=35, step=10):

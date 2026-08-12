@@ -83,7 +83,12 @@ CAP_FRAC = 0.88             # pointer must be this fraction of its own cap's bri
 REACH = 1.8                 # search out to this multiple of the cap radius
 MIN_CONTRAST = 2.0          # below this, treat the angle as not found
 FX = 1441.0                 # C270 focal length in px at 1280x960, course calibration
-CAP_MM = 10.0               # metal cap diameter. MEASURE YOURS, the distance scales with it
+CAP_MM = 17.0               # knob diameter as the finder sees it. Derived, not
+                            # assumed: the tags are 35 and 15 mm (from the print
+                            # PDF), which puts both at ~520 mm in the same frame
+                            # where the caps read 47 px, and 47 px at 520 mm is
+                            # 17 mm, which is exactly a DS-1 knob. The old 10.0
+                            # made every distance read ~40% short.
 
 # A good setup, for the calibrate report to grade against.
 #

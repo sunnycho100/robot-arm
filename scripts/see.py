@@ -20,8 +20,8 @@ TAG_SIZE = 0.020        # default tag edge, meters. Distance scales directly wit
 # decode in the 4x4 family, NOT the 6x6_250 this file used to assume. They are
 # different sizes, and pose scales linearly with size, so one global TAG_SIZE
 # would put one of them at the wrong distance by a factor of two.
-TAG_MM = {18: 20.0,     # big tag, on the pedal
-          12: 9.0}      # little tag, on the robot base plate
+TAG_MM = {18: 35.0,     # big tag, on the pedal (user-confirmed from the print PDF)
+          12: 15.0}     # little tag, on the robot base plate
 
 _cam_matrix = pickle.load(open(f'{CALIB}/cam_matrix.p', 'rb'), encoding='bytes')
 _dist_matrix = pickle.load(open(f'{CALIB}/dist_matrix.p', 'rb'), encoding='bytes')

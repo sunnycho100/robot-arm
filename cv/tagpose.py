@@ -40,7 +40,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / 'scripts'))
 from compat import detect, intrinsics
 
-TAG_MM = {18: 20.0, 12: 9.0}       # estimates, see the note above
+TAG_MM = {18: 35.0, 12: 15.0}      # user-confirmed from the print PDF
 WHERE = {18: 'pedal', 12: 'robot base'}
 DICT = '4x4_50'
 
