@@ -21,9 +21,15 @@ shared with the direct-USB path, so there is one grip-and-turn implementation
 and two transports rather than two implementations that drift apart. This file
 is the transport, and the joint-angle bookkeeping the transport needs.
 
-UNTESTED AGAINST HARDWARE at the time of writing: developed without a ROS
-install to hand. The direct path (`scripts/turn_knob.py`) remains the fallback
-and is unaffected by anything here.
+Tested against a REAL ROS 2 graph, not just written: built with colcon in the
+CAE ros2-humble container and run against the course's own `command_xarm` in
+its no-hardware echo mode. Poses round-trip at zero counts and the whole
+regrip search executes over live topics. NOT yet tested against the arm
+itself, so the direct path (`scripts/turn_knob.py`) remains the fallback and
+is unaffected by anything here.
+
+    apptainer exec /cae/apps/data/ros2-2024/images/ros2-humble.sif bash -c \
+      "source /opt/ros/humble/setup.bash && colcon build"
 """
 import pathlib
 import sys
