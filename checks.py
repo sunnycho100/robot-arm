@@ -33,6 +33,9 @@ STAGES = [
      'never overshooting'),
     ('regrip',  'scripts', 'regrip.py',
      'the search recovers a mis-taught pose, and stops rather than wandering'),
+    ('turncore', 'scripts', 'turn_core.py',
+     'the shared grip-and-turn sequence: searches, reuses the offset, and '
+     'never rolls the wrist while holding nothing'),
     ('knob',    'scripts', 'knob.py selftest',
      'the BENCH knob finder and pointer reader, on a synthetic pedal'),
     ('urdfmap', 'sim', 'urdfmap.py',

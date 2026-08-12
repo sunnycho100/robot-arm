@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
 		'command_xarm=xarmrob.command_xarm:main',
+        'knob_turner=xarmrob.knob_turner:main',
 		'cmd_sliders=xarmrob.cmd_sliders:main',
         'cmd_keyboard=xarmrob.cmd_keyboard:main',
 		'angle_sliders=xarmrob.angle_sliders:main',
