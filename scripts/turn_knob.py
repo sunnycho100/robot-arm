@@ -40,7 +40,9 @@ import json, os, sys, threading, time
 import numpy as np
 import cv2
 import arm as A
+import ik                # millimetre pose corrections
 import knob
+import regrip            # where to try next when the grip misses
 import strategy          # bite sizing, shared with the simulation
 
 flag = lambda k, d: next((type(d)(a.split('=')[1])
@@ -130,6 +132,88 @@ def pick_knob(before, after):
     return (best, moved) if moved[best] >= DEAD_BITE else (None, moved)
 
 
+# Where the grip actually works, in millimetres from the taught pose. Starts at
+# nothing and is learned the first time a grip misses, then reused, because a
+# taught pose that was 4 mm out on bite one is still 4 mm out on bite two.
+GRIP_OFFSET = np.zeros(2)
+
+
+def _try_grip(offset):
+    """Fly to the taught pose plus this offset and squeeze. -> (score, holding).
+
+    score is the squeeze force as a fraction of what was asked for, which is
+    the only positional signal the bench has: it falls off as the jaws stop
+    straddling the knob. A pose the arm cannot reach scores zero rather than
+    raising, because the search should route around it, not stop.
+    """
+    base = A.counts_of(A.poses()[POSE])
+    try:
+        target, _ = ik.nudged(base, float(offset[0]), float(offset[1]), 0.0)
+    except ValueError as e:
+        print(f'  offset ({offset[0]:+.1f},{offset[1]:+.1f}) mm unreachable: {e}',
+              file=sys.stderr)
+        return 0.0, False
+    A.preclose()
+    if not A.approach(target, speed=120):
+        return 0.0, False
+    cmd, lag, holding = A.squeeze(SQUEEZE)
+    return min(1.0, lag / max(SQUEEZE, 1)), holding
+
+
+def find_grip():
+    """Search outward from the taught pose until something actually grips.
+
+    Runs only when the grip has already missed, so it costs nothing on a good
+    pose. Measured against the model, over 16 directions per error size: a
+    taught pose 4 mm out went from 6/16 to 16/16, and one 6 mm out from 0/16
+    to 15/16. Past about 12 mm it correctly gives up rather than wandering.
+
+    It does NOT stop at the first grip that holds, and that is deliberate.
+    Stopping there is tempting, because letting go of a working grip to look
+    for a better one sounds like a bad trade with a demo running. Measured, it
+    is the worse trade: the first hold tends to sit at the very edge of where
+    the jaws still catch the knob, and re-flying to that offset held only 8
+    times in 20 once the arm's 1.5 mm of scatter was applied. Letting the
+    search finish centres it, and the offset is then reused for every later
+    bite at one squeeze each, so the extra squeezes are paid once.
+    """
+    global GRIP_OFFSET
+    origin = np.asarray(GRIP_OFFSET, float).copy()
+    s = regrip.Search()
+    print(f'the grip missed. Searching around the taught pose '
+          f'(up to {regrip.MAX_REACH:.0f} mm, {regrip.MAX_TRIES} tries)')
+    while True:
+        off = s.next_offset()
+        if off is None:
+            break
+        here = np.asarray(off) + origin
+        score, holding = _try_grip(here)
+        s.record(off, score, holding)
+        print(f'  ({here[0]:+5.1f}, {here[1]:+5.1f}) mm  force {score:4.0%}'
+              f'  {"HOLDS" if holding else "-"}')
+        A.release()
+    if not s.holding:
+        print(f'no grip found: {s.why}\n  Re-teach {POSE}, or nudge it by hand:'
+              f'\n    python3 arm.py goto {POSE} && python3 arm.py nudge --dx=..',
+              file=sys.stderr)
+        return False
+    GRIP_OFFSET = origin + np.asarray(s.best, float)
+    print(f'best grip at ({GRIP_OFFSET[0]:+.1f}, {GRIP_OFFSET[1]:+.1f}) mm from '
+          f'the taught pose, in {s.attempts} tries. Reusing it from now on.')
+    # The search let go of everything it tried, so take the winning pose again
+    # for real. Worth a few goes: the offset is known good and the only thing
+    # in the way is the arm's own scatter, so a miss here is bad luck rather
+    # than bad aim, and one more squeeze is far cheaper than another search.
+    for attempt in range(3):
+        _, holding = _try_grip(GRIP_OFFSET)
+        if holding:
+            return True
+        A.release()
+    print('the search found a grip but the arm could not land on it three '
+          'times running. Something is moving.', file=sys.stderr)
+    return False
+
+
 def one_bite(deg):
     """Grip, roll by deg, release, park. Returns the roll actually commanded.
 
@@ -137,11 +221,14 @@ def one_bite(deg):
     fingers splay to 88 mm when open against knobs 24 mm apart, so descending
     open drives them into both neighbours; the count itself is a bench
     measurement (see arm.PRECLOSE), only the direction came from simulation.
+
+    A missed grip used to end the bite here, and two of those ended the run.
+    It now searches instead: the arm cannot see where its own fingers are, but
+    it can feel whether they closed on something, and that is enough to hunt
+    with.
     """
-    A.preclose()
-    A.approach(A.counts_of(A.poses()[POSE]), speed=120)
-    cmd, lag, holding = A.squeeze(SQUEEZE)
-    if not holding:
+    score, holding = _try_grip(GRIP_OFFSET)
+    if not holding and not find_grip():
         A.release()
         A.move(A.NEUTRAL, speed=150)
         return None
