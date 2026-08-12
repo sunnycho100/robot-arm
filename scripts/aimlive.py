@@ -22,7 +22,12 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, '/home/pi/knobcheck')
+sys.path.insert(0, '/home/pi/cv')
 import knob
+try:
+    import compat                       # ArUco, whichever OpenCV this is
+except Exception:
+    compat = None
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 WANT = 3                       # knobs on a DS-1
@@ -120,6 +125,26 @@ def annotate(frame):
                 f'nearest miss: {sorted(rejects, reverse=True)[0][1][:58]}')
     cv2.putText(frame, hint, (14, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                 (200, 200, 200), 1, cv2.LINE_AA)
+
+    # The tags matter as much as the knobs while aiming, and they fail in a
+    # different way: a partly covered marker still decodes, just as the wrong
+    # id. Seeing the id live is the only way to catch that while moving the
+    # camera rather than three runs later.
+    if compat is not None:
+        corners, ids, which = compat.detect_any(frame)
+        for c, i in zip(corners, ids):
+            q = c.astype(int)
+            cv2.polylines(frame, [q.reshape(-1, 1, 2)], True, (255, 200, 0), 2)
+            cv2.putText(frame, f'id {int(i)}', (q[:, 0].min(), q[:, 1].min() - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2, cv2.LINE_AA)
+        want = {12, 18}
+        got = set(int(i) for i in ids)
+        msg = (f'tags {sorted(got)}' if got else 'NO TAGS')
+        if got and got != want:
+            msg += f'   expected {sorted(want)}'
+        cv2.putText(frame, msg, (14, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    (120, 255, 120) if got == want else (120, 160, 255),
+                    2, cv2.LINE_AA)
     return frame
 
 

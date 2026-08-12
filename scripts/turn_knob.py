@@ -70,16 +70,23 @@ class Session:
     def __init__(self, outdir, fps=10.0):
         self.dir = outdir
         os.makedirs(outdir, exist_ok=True)
-        self.cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
-        self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+        # Retry once. This C270 sulks after a quick close-and-reopen and returns
+        # nothing but 10 s select() timeouts until it is opened again, and a run
+        # that dies here throws away the whole grip sequence for a hiccup.
         ok, frame = False, None
-        for _ in range(8):
-            ok, frame = self.cam.read()
-        if not ok:
+        for attempt in range(2):
+            self.cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
+            self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
+            for _ in range(8):
+                ok, frame = self.cam.read()
+            if ok:
+                break
             self.cam.release()
-            raise SystemExit('no frame from the camera. Is camstream.py holding it? '
-                             'Stop it with:  pkill -f "[c]amstream"')
+            time.sleep(2.0)
+        if not ok:
+            raise SystemExit('no frame from the camera, twice. Something else is '
+                             'holding it (a live viewer will), or USB has dropped')
         self._frame = frame
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -168,7 +175,22 @@ class DirectBackend:
         return A.turn_by(deg, speed=200)
 
     def park(self):
-        return A.move(A.NEUTRAL, speed=150)
+        # NEUTRAL is not a place to look from. Measured on the bench: with the
+        # base at 500 the arm covers the knob row, the consensus finder sees 2
+        # of 3, and a bite that turned the knob 54 degrees read back as 262,
+        # because the finder locked onto something else entirely. Every angle
+        # the loop compares against is measured from here, so a park pose that
+        # blocks the camera does not merely add noise, it inverts the feedback.
+        # The taught "park" pose is chosen by parkscan.py for exactly this.
+        return A.move(_look_from(), speed=150)
+
+
+def _look_from():
+    """The pose to retract to before measuring. Falls back to NEUTRAL."""
+    try:
+        return list(A.counts_of(A.poses()['park']))
+    except Exception:
+        return list(A.NEUTRAL)
 
 
 BACKEND = DirectBackend()
@@ -214,7 +236,7 @@ def main():
         except Exception as e:
             print(f'could not read the battery ({e})', file=sys.stderr)
 
-        A.move(A.NEUTRAL, speed=150)
+        A.move(_look_from(), speed=150)
         sess.still('00_start')
         start = sess.angles()
         if not start:
@@ -324,7 +346,7 @@ def main():
         # whole log, which is exactly when the log is worth most.
         try:
             A.release()
-            A.move(A.NEUTRAL, speed=150)
+            A.move(_look_from(), speed=150)
         except Exception as e:
             print(f'could not park the arm: {e.__class__.__name__}: {e}\n'
                   f'  Check the arm has power and is still on the USB bus:\n'
