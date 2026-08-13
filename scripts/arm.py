@@ -367,7 +367,30 @@ def approach(target, via=0.75, speed=120, creep=50, tol=35):
         return False
     print(f'-- approach stage 2: creeping the last {(1-via)*100:.0f}%, '
           f'contact detection every step (tol {tol})')
-    return move(target, speed=creep, tol=tol, check_every=2)
+    if not move(target, speed=creep, tol=tol, check_every=2):
+        return False
+
+    # Say so when the pose was not actually reached, because everything
+    # downstream misreads it as a sideways aiming error.
+    #
+    # A pose taught with the arm limp records UNLOADED counts. Replayed under
+    # power the servo has to hold the arm's weight and settles short, and it
+    # stays short: measured here, the elbow sat 11 counts under on six
+    # consecutive commands to the same target, putting the fingertips 6.8 mm
+    # above a knob 17 mm across. Biasing the command by the residual is the
+    # obvious fix and it does not work on this arm: elbow+11 computes to
+    # 68.9 mm, under the 70.4 mm floor, so move() refuses it. The pose as
+    # taught is not reachable under load, and no amount of searching finds
+    # that out, because find_grip only searches x and y. Teach under power
+    # instead, so the saved counts are ones the arm can hold.
+    err = [t - c for t, c in zip(target, read())][:GRIP]
+    if max(abs(e) for e in err) > 8:
+        z = float(endpoint(read())[2]) * 1000
+        want = float(endpoint(target)[2]) * 1000
+        print(f'   NOT AT THE POSE: off by {err}, {z - want:+.1f} mm in z. '
+              f'The jaws will close where the knob is not. Re-teach this pose '
+              f'with the arm powered rather than limp.', file=sys.stderr)
+    return True
 
 
 def poses():
@@ -553,6 +576,36 @@ def main():
         t2 = read()
         t2[GRIP] = taught_grip
         move(t2, speed=200)
+
+    elif cmd == 'settle':
+        # Teach the pose the arm can actually HOLD, not the one it was posed
+        # at. `teach` records counts while the arm is limp in your hand, and
+        # under power the elbow settles ~11 counts short of them, which put
+        # the fingertips 6.8 mm above the knob and closed the jaws on air. The
+        # command that would compensate is below the height floor, so the
+        # taught pose is simply unreachable under load. Fly to it, read where
+        # the arm truly came to rest, and save THAT.
+        entry = poses()[name]
+        target = list(counts_of(entry))
+        preclose()
+        approach(target, speed=speed)
+        time.sleep(0.5)
+        landed = read()
+        landed[GRIP] = target[GRIP]
+        off = [l - t for l, t in zip(landed, target)][:GRIP]
+        print(f'taught {target}')
+        print(f'landed {landed}   off by {off}')
+        print(f'z: taught {float(endpoint(target)[2])*1000:.1f} mm, '
+              f'actually {float(endpoint(landed)[2])*1000:.1f} mm')
+        _, lag, holding = squeeze(GRIP_FORCE)
+        release()
+        if not holding:
+            sys.exit(f'the jaws closed on air here (force {lag}), so this is '
+                     f'not a grip worth saving. Re-teach with arm.py teach, '
+                     f'and hold the fingers LOWER on the knob than feels right.')
+        save(name, look_safe())
+        print(f'{name} re-saved as the pose the arm actually reaches, '
+              f'holding at {lag} counts')
 
     elif cmd == 'save':
         save(name, look_safe())
