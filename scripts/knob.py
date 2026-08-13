@@ -366,11 +366,13 @@ def grab_frames(n=9, index=0):
                      'holding /dev/video0, or the USB link has dropped')
 
 
-def _pointer(V, S, cx, cy, cap_r):
-    """Score every angle by the length of its bounded bright run. Returns profile.
+def _bright_pointer(V, S, cx, cy, cap_r):
+    """Score every angle by the length of its bounded BRIGHT run, outside the cap.
 
-    The brightness bar is set by this knob's own cap, so a dimmer scene lowers the
-    bar for the pointer by the same amount and the test still holds.
+    This is the pedal's pointer: white paint on the dark skirt, so it lives
+    beyond the cap edge and the skirt closes around it. The brightness bar is
+    set by this knob's own cap, so a dimmer scene lowers the bar for the
+    pointer by the same amount and the test still holds.
     """
     cap_v = np.median(_ring_vals(V, cx, cy, max(2, int(cap_r * 0.6)), step=3))
     thresh = max(160.0, CAP_FRAC * float(cap_v))
@@ -393,8 +395,87 @@ def _pointer(V, S, cx, cy, cap_r):
             r += 1
         # Still bright at the limit means this ray left the knob: not a pointer.
         score[d] = 0 if r > limit else run
+    return _smooth(score), thresh
+
+
+def _dark_pointer(V, cx, cy, cap_r):
+    """Score every angle by the length of its DARK run, inside the cap.
+
+    This is the amp's pointer: a black line printed across a cream cap. It is
+    the exact inverse of the pedal's and it lives in the opposite place, on the
+    cap face rather than out on the skirt, so both the polarity and the search
+    band have to flip. Nothing outside the cap is looked at, which matters
+    because the panel beyond the cap is black too: a dark ray would just keep
+    going, and the "does the run end" test that anchors the bright pointer has
+    nothing to bite on here. The cap edge does that job instead.
+    """
+    cap_v = float(np.median(_ring_vals(V, cx, cy, max(2, int(cap_r * 0.7)), step=3)))
+    thresh = 0.65 * cap_v
+    inner, outer = max(2, int(cap_r * 0.25)), max(4, int(cap_r * 0.92))
+
+    score = np.zeros(360)
+    for d in range(360):
+        t, run = np.deg2rad(d), 0
+        for r in range(inner, outer + 1):
+            y, x = int(cy + r * np.sin(t)), int(cx + r * np.cos(t))
+            if not (0 <= y < V.shape[0] and 0 <= x < V.shape[1]):
+                break
+            if V[y, x] < thresh:
+                run += 1
+        score[d] = run
+    return _smooth(score), thresh
+
+
+def _smooth(score):
     return np.convolve(np.r_[score[-15:], score, score[:15]],
-                       np.ones(11) / 11, 'same')[15:-15], thresh
+                       np.ones(11) / 11, 'same')[15:-15]
+
+
+def _contrast(p):
+    return float(p.max() / max(p.mean(), 1e-6))
+
+
+# How much of a cap face has to be dark before the pointer is judged to be
+# printed ON it rather than out on the skirt. Measured, not chosen: the
+# synthetic pedal caps read 0.000 and every knob on the Fender read 0.028 to
+# 0.035, so anything in between separates them and nothing is close to the
+# line. A speck of dirt or a screw slot would have to cover a fiftieth of the
+# cap to reach it.
+DARK_ON_CAP = 0.012
+
+
+def _mark_on_cap(V, cx, cy, cap_r):
+    """Fraction of the cap face darker than the cap itself."""
+    r = max(2, int(0.85 * cap_r))
+    y0, y1 = max(0, cy - r), min(V.shape[0], cy + r + 1)
+    x0, x1 = max(0, cx - r), min(V.shape[1], cx + r + 1)
+    patch = V[y0:y1, x0:x1]
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    inside = (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r
+    if not inside.any():
+        return 0.0
+    vals = patch[inside]
+    return float((vals < 0.65 * float(np.median(vals))).mean())
+
+
+def _pointer(V, S, cx, cy, cap_r):
+    """Whichever polarity this knob actually uses, decided by looking.
+
+    Not a setting, because it should not have to be one: the pedal paints a
+    WHITE pointer on a dark skirt outside the cap, the amp prints a BLACK line
+    across the cap face, and a rig is whatever is on the bench.
+
+    Choosing by whichever scorer reports more contrast does NOT work, tried
+    first: on the pedal's own synthetic knob3 the dark scorer scored 32.7
+    against the correct bright scorer's 9.8, because shading across an
+    aluminium cap is a perfectly good dark run if nothing says it should not
+    be. So the question asked here is physical instead, and answered before
+    either scorer runs: is there a dark mark ON the cap? If there is, that is
+    the pointer. If there is not, the pointer must be outside.
+    """
+    if _mark_on_cap(V, cx, cy, cap_r) >= DARK_ON_CAP:
+        return _dark_pointer(V, cx, cy, cap_r)
+    return _bright_pointer(V, S, cx, cy, cap_r)
 
 
 def measure(frame, knobs=None):
