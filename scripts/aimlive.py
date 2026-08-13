@@ -45,6 +45,7 @@ RECENT = []
 # goes through pipewire, and holding that open DEADLOCKS: five threads stuck in
 # futex_wait, no frames, no error. Measured: default backend hangs before the
 # first read, V4L2 delivers 20/20 frames at 1280x960 while held open.
+knob.lock_camera()          # freeze the white balance, see knob.py
 cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)

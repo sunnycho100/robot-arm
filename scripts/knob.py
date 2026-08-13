@@ -77,7 +77,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, 'knobs.json')
 REF = os.path.join(HERE, 'knob_ref.json')
 
-S_MAX, V_MIN = 90, 150      # the metal cap: unsaturated and clearly brighter than the skirt
+S_MAX, V_MIN = 130, 150     # the cap: LOW saturation and clearly brighter than the skirt.
+                            # 90 was tuned on a bare aluminium pedal cap, which
+                            # is nearly grey. A Fender's cream knob is not: it
+                            # measures S around 60 with a 95th percentile of 85,
+                            # so it sat 5 counts under the old bar and dropped
+                            # out whenever the camera warmed up. Swept live on
+                            # the amp: 90 gives 3 stable knobs and 3 flickering,
+                            # 110 gives 7 and 0, and it stays 7 all the way to
+                            # 170. So 130 is the middle of a plateau rather than
+                            # a value on an edge. Orange pedal bodies read well
+                            # past 150, which is what this gate exists to reject.
 V_DARK = 90                 # the black skirt
 CAP_FRAC = 0.88             # pointer must be this fraction of its own cap's brightness
 REACH = 1.8                 # search out to this multiple of the cap radius
@@ -356,6 +366,31 @@ def _spread(items, key):
             if items else 0)
 
 
+def lock_camera(dev='/dev/video0'):
+    """Freeze the auto white balance. Best effort, never fatal.
+
+    The reason this exists, seen live: the arm swings into frame, the C270
+    re-balances against a mostly black amp, and everything goes yellow. The
+    caps gain saturation, cross the S_MAX gate, and knobs simply vanish
+    mid-run. The drifted setting was measured at 2760 K against a 4000 K
+    default, which is a strong warm cast.
+
+    Exposure is deliberately LEFT on auto. Locking it too was tried and made
+    things worse: at a fixed 333 the panel went dark, cap brightness fell to
+    210 and saturation ROSE to 84, taking the caps closer to the gate rather
+    than further from it. Auto exposure is doing a useful job here; only the
+    colour balance was hurting.
+    """
+    import subprocess
+    for ctrl in ('white_balance_automatic=0', 'white_balance_temperature=4000'):
+        try:
+            subprocess.run(['v4l2-ctl', '-d', dev, '--set-ctrl', ctrl],
+                           check=False, capture_output=True, timeout=3)
+        except Exception:
+            return False          # no v4l2-ctl, or not Linux. Not worth caring.
+    return True
+
+
 def grab_frames(n=9, index=0):
     """n frames from the camera, for a consensus that needs more than one.
 
@@ -366,6 +401,7 @@ def grab_frames(n=9, index=0):
     # back as a 10 s select() timeout until it is reopened. One retry after a
     # pause turns that into a hiccup instead of an aborted run, which matters
     # because a look-move-look loop opens the camera once per iteration.
+    lock_camera()
     for attempt in range(2):
         cam = cv2.VideoCapture(index, cv2.CAP_V4L2)
         cam.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
