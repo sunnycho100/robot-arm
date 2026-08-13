@@ -29,7 +29,9 @@ STEP0 = 4.0          # mm, the first ring's radius, and the hunt's step outward
 STEP_MIN = 1.0       # mm, below this the arm's own scatter swamps the step
 SHRINK = 0.5         # how much the ring tightens once something has held
 MAX_REACH = 12.0     # mm, never wander further than this from the taught pose
-MAX_TRIES = 13       # each try is an approach and a squeeze: roughly 8 seconds
+MAX_TRIES = 13       # each try is an approach and a squeeze: ~40 seconds on
+                     # the real arm, so the flat-miss bailout below matters
+                     # more than this ceiling does.
 # A score this good stops the search early. It is a HOLD margin, not a target:
 # the force fades over about 9 mm and the jaws lose the knob at 4, so 0.65 is
 # roughly 3 mm off the axis, comfortably inside. Set at 0.80 the search almost
@@ -100,6 +102,19 @@ class Search:
             self.why = (f'gave up after {self.max_tries} attempts. Re-teach '
                         f'the pose: the search only covers a few mm and this '
                         f'is further out than a nudge can fix')
+            return None
+        # A miss the search CAN fix is sideways, and a sideways miss has a
+        # gradient: probes on the knob side score visibly higher. Timed on the
+        # bench, a vertical miss (a limp-taught pose droops ~7 mm under load)
+        # has no gradient at all, every probe of a full ring reads the same
+        # ~33%, and the search ground through ten minutes of 40-second probes
+        # learning nothing. Seven flat probes say the problem is not in this
+        # plane: stop and say so, instead of finishing the lap on principle.
+        if (not self.holding and len(self.tried) >= 1 + HUNT_POINTS
+                and self.best_score < 0.4):
+            self.why = ('nothing anywhere near the pose even begins to grip: '
+                        'the miss is probably vertical, which this search '
+                        'cannot fix. Re-teach, then verify with  arm.py settle')
             return None
         if not self._started:
             self._started = True
