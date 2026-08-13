@@ -233,13 +233,26 @@ def move(target, speed=120, linear=False, tol=80, check_every=0):
 # ---- poses. Entries are {'counts': [...], 'tag': {...} or None}. Bare lists
 # ---- from before vision existed still load.
 
-CAP = 605           # fully closed calibrates to 610; stay just under it. Was
-                    # 590, and every real squeeze ended pinned there at ~73
-                    # counts of force with the knob still slipping: the limit
-                    # was choosing the grip force, not the caller.
-HOLD_MIN = 30       # counts of force that constitute a real grip, not air
+CAP = 605           # jaw travel limit. Fully closed on AIR calibrates to 610.
+                    # Do NOT raise this looking for a firmer grip: tried on the
+                    # bench at 615 and the grip got WORSE, 82 counts of force
+                    # down to 35 and the fingers on air. The knob is a TAPERED
+                    # cone, so past a point the clamping force stops pressing
+                    # inward and starts wedging the jaws upward off the taper.
+                    # More force is the wrong axis; where on the knob the
+                    # fingers sit is the right one.
+HOLD_MIN = 45       # counts of force that constitute a real grip, not air.
+                    # Re-measured after CAP moved to 605: near full travel the
+                    # jaws load their own linkage, so closing on AIR now reads
+                    # 27-33 counts where it used to read 18. The old bar of 30
+                    # certified one of those as a grip and the run rolled air.
+                    # A real hold on the knob reads 87. Halfway is 45.
 SLIP_DROP = 12      # force falling this far below its own peak means it escaped
-GRIP_FORCE = 85     # the force the real run uses, so teach must test at it too
+GRIP_FORCE = 100    # the force the real run uses, so teach must test at it too.
+                    # 85 was leaving squeeze on the table: it is a TARGET, and
+                    # the jaws stopped on reaching it at command 589 while CAP
+                    # is 605, so ~15 counts of travel went unused and the knob
+                    # still turned inside the fingers. 100 spends them.
 
 
 def squeeze(want_lag=35, step=10):
@@ -349,23 +362,33 @@ def release(to=410, speed=200):
     return move(t, speed=speed)
 
 
-def approach(target, via=0.75, speed=120, creep=50, tol=35):
-    """Two-stage approach: normal speed most of the way, then creep with contact
-    detection on every step.
+def approach(target, via=0.75, speed=120, creep=50, tol=35, overhead_mm=25.0):
+    """Fly to a point ABOVE the target, then descend straight down onto it.
 
-    Driving straight onto the knob has pushed the pedal across the desk. A single
-    move is a straight line in JOINT space, so the gripper arrives diagonally, and
-    any bearing error puts it into the deck rather than onto the knob, with the
-    full travel of the move behind it. Creeping the last leg with a tight stall
-    tolerance turns a shove into a detected contact: the arm stops instead of
-    winning the argument with the pedal.
+    The old way, interpolating most of the way and creeping the rest, arrives
+    DIAGONALLY, because a joint-space line is a diagonal in the world. Watched
+    on video at the DIST pose: the last leg swept the fingers sideways across
+    the knob and they ended up riding on TOP of the cap, where the jaws close
+    on the metal cone and slide to the travel limit without ever holding. The
+    same pose reached from ABOVE seats the fingers around the skirt, because
+    coming down is the direction the knob is open in.
+
+    So stage 1 goes to the target lifted by overhead_mm, wrist orientation
+    kept, and stage 2 is a pure vertical creep with contact detection. If the
+    lifted point is unreachable the old diagonal via is used, announced.
     """
     start = read()
-    via_pt = [round(a + (b - a) * via) for a, b in zip(start, target)]
-    print(f'-- approach stage 1: {via*100:.0f}% of the way')
-    if not move(via_pt, speed=speed):
+    print(f'-- approach stage 1: to {overhead_mm:.0f} mm above the pose')
+    try:
+        import ik
+        above, _ = ik.nudged(list(target), 0.0, 0.0, overhead_mm)
+    except Exception as e:
+        print(f'   (no overhead point: {e}; falling back to the diagonal)',
+              file=sys.stderr)
+        above = [round(a + (b - a) * via) for a, b in zip(start, target)]
+    if not move(above, speed=speed):
         return False
-    print(f'-- approach stage 2: creeping the last {(1-via)*100:.0f}%, '
+    print(f'-- approach stage 2: straight down, '
           f'contact detection every step (tol {tol})')
     if not move(target, speed=creep, tol=tol, check_every=2):
         return False
@@ -410,14 +433,40 @@ def save(name, tag=None):
 
 
 def look_safe(shot=None):
-    """Tag poses, or {} if the camera or OpenCV is missing. Never fatal."""
+    """Tag poses, or {} if the camera is missing, busy or sulking. Never fatal,
+    and never SLOW: this runs at the end of `teach`, where the pose is already
+    in hand and the tag is a nice-to-have. Seen on the bench, the C270 goes
+    into a mood after a quick reopen and answers every read with a 10 second
+    select() timeout, so 20 frames became a three-minute hang at the exact
+    moment the user was told teaching was done. Alarm out and move on.
+    """
+    class _Slow(Exception):
+        pass
+
+    def _bell(signum, frame):
+        raise _Slow()
+
+    armed = False
     try:
+        import signal
+        if hasattr(signal, 'SIGALRM'):
+            signal.signal(signal.SIGALRM, _bell)
+            signal.alarm(20)
+            armed = True
         sys.path.insert(0, os.path.expanduser('~'))
         import see
-        return see.look(frames=20, shot=shot)
+        return see.look(frames=8, shot=shot)
+    except _Slow:
+        print('the camera did not answer in 20 s, saving the pose without a '
+              'tag reading', file=sys.stderr)
+        return {}
     except Exception as e:
         print(f'vision unavailable ({e.__class__.__name__}: {e})', file=sys.stderr)
         return {}
+    finally:
+        if armed:
+            import signal
+            signal.alarm(0)
 
 
 def drift(taught, now):
@@ -576,6 +625,37 @@ def main():
         t2 = read()
         t2[GRIP] = taught_grip
         move(t2, speed=200)
+
+    elif cmd == 'jog':
+        # One joint, N counts, nothing else touched.
+        #
+        # `nudge` asks IK for a point and re-solves the arm to reach it, which
+        # is right when you know the millimetres you want. It is wrong when a
+        # human is looking at the gripper and saying "a bit higher": the
+        # solver is free to change the wrist pitch to hit the same point, so
+        # the tool arrives at the requested height pointing somewhere new.
+        # Measured on the bench asking for +3 mm in z: joint 4 moved 10 counts
+        # and the approach angle went with it.
+        #
+        # Here nothing is solved. The named joint moves, the rest hold, and
+        # what you saw is what you get. Height floor still applies.
+        names = ['base', 'shoulder', 'elbow', 'forearm', 'pitch', 'roll', 'grip']
+        if name not in names:
+            sys.exit(f'jog which joint? one of {", ".join(names)}\n'
+                     f'  arm.py jog pitch -8        # 8 counts, sign is yours to find\n'
+                     f'  arm.py jog shoulder +5')
+        try:
+            delta = int(argv[2])
+        except (IndexError, ValueError):
+            sys.exit('how many counts? e.g.  arm.py jog pitch -8')
+        i = names.index(name)
+        target = read()
+        before_z = float(endpoint(target)[2]) * 1000
+        target[i] = int(np.clip(target[i] + delta, 0, 1000))
+        if move(target, speed=40, tol=35, check_every=2):
+            now = read()
+            print(f'{name}: {now[i]}   z {before_z:.1f} -> '
+                  f'{float(endpoint(now)[2])*1000:.1f} mm')
 
     elif cmd == 'settle':
         # Teach the pose the arm can actually HOLD, not the one it was posed

@@ -129,18 +129,20 @@ def _ring_vals(V, cx, cy, r, step=5):
             and 0 <= int(cx + r * np.cos(np.deg2rad(d))) < V.shape[1]]
 
 
-# The cap's allowed size on screen, in pixels of blob area. This is a FRAMING
-# constraint, not a tuning knob, and it is the one that will bite first if the
-# camera gets remounted: a cap outside this window is silently not a knob.
+# The cap's allowed size on screen, in pixels of blob area. This is a coarse
+# sanity window, NOT the thing that picks the knobs out: it only has to admit
+# every plausible cap and exclude specks and whole panels. What actually
+# rejects the impostors is the size-consistency filter below, which keeps only
+# blobs the same size as the median, and the multi-frame consensus above it.
+# Both are scale free, so neither needs touching for a new rig.
 #
-#     cap diameter on screen = FX * CAP_MM / distance
-#
-# so with FX = 1441 and a 10 mm cap the window below accepts roughly 205 mm to
-# 1000 mm, and with a 14 mm cap roughly 285 mm to 1400 mm. Anything CLOSER than
-# that is rejected for being too big. Measure CAP_MM before trusting either
-# number, because the whole window slides with it. `knob.py calibrate` prints
-# the distance it infers, which is the check that matters.
-CAP_AREA = (150, 4000)
+# It used to top out at 4000, tuned around a 47 px pedal cap. Pointed at a
+# Fender Rumble the knobs measure 3665 to 5840 px, so six of the eight were
+# rejected as "too big" while the LED indicator dots and the white panel
+# lettering sailed through and got named knob1 through knob8. The window is
+# now wide enough for a knob that fills a fifteenth of the frame, and the
+# consistency filter throws out the dots exactly as it always did.
+CAP_AREA = (150, 20000)
 
 
 def find_knobs(frame, rejects=None):
@@ -214,24 +216,40 @@ def find_knobs(frame, rejects=None):
                       'skirt_r': int(round(cap_r * REACH)),
                       'roundness': min(w, h) / max(w, h)})
 
-    # Knobs on one pedal are the same size, so a blob whose cap is nothing
-    # like the others is not one of them. Seen live on the bench: three real
+    # Knobs on one panel are the same size, so keep the LARGEST GROUP of
+    # blobs that agree on size and throw the rest away. Seen live: three real
     # caps at 46, 48 and 48 px plus a stray 18 px detection on the robot's own
     # base, which every other test here accepts because it IS round, bright,
     # unsaturated and ringed by dark. Size is the thing that separates them.
     #
-    # The window is wide on purpose. Perspective only shrinks the far knob by
-    # about 5 percent at this working distance (24 mm of spacing against
-    # 300 mm of range, even well off-axis), so anything past a third is not
-    # foreshortening, it is a different object.
+    # This used to take the MEDIAN size and keep everything near it, which
+    # quietly assumes the knobs are the majority of what was found. Pointed at
+    # a Fender Rumble that assumption broke: the panel carries a row of white
+    # LED indicators and white lettering, the median came out at 20 px, and
+    # every real 86 px knob was rejected as "nothing like the others". Asking
+    # for the largest agreeing group instead makes no assumption about what
+    # else is in frame, only that the knobs outnumber any one other kind of
+    # thing, which is what a control panel looks like.
+    #
+    # The group is chosen by how much of the panel it covers, not by how many
+    # members it has. Counting members is nearly a coin flip on this amp: it
+    # carries eight little white indicator LEDs against eight knobs, and which
+    # group wins changed from frame to frame, so the saved calibration and the
+    # annotated picture disagreed about what a knob was. Area is decisive and
+    # assumes no more than counting did: six knobs cover about 30000 px of
+    # panel and eight indicators about 3200, because a knob is the thing you
+    # can actually get fingers around.
     if len(found) > 2:
-        med = float(np.median([f['cap_r'] for f in found]))
-        keep = [f for f in found if 0.6 * med <= f['cap_r'] <= 1.7 * med]
+        def agree(r):
+            return [f for f in found if 0.6 * r <= f['cap_r'] <= 1.7 * r]
+        best = max((f['cap_r'] for f in found),
+                   key=lambda r: sum(g['cap_r'] ** 2 for g in agree(r)))
+        keep = agree(best)
         for f in found:
             if f not in keep:
                 toss(int(np.pi * f['cap_r'] ** 2),
-                     f'cap {2*f["cap_r"]} px is nothing like the others '
-                     f'({2*med:.0f} px): not a knob on this pedal')
+                     f'cap {2*f["cap_r"]} px is nothing like the '
+                     f'{len(keep)} that agree at {2*best} px')
         found = keep
 
     # Name them along whichever image axis the row actually runs down.

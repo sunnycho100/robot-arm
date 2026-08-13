@@ -174,6 +174,13 @@ class DirectBackend:
     def roll_by(self, deg):
         return A.turn_by(deg, speed=200)
 
+    def lower(self, mm):
+        try:
+            tgt, _ = ik.nudged(A.read(), 0.0, 0.0, -float(mm))
+        except ValueError:
+            return False
+        return A.move(tgt, speed=40, tol=35, check_every=2)
+
     def park(self):
         # NEUTRAL is not a place to look from. Measured on the bench: with the
         # base at 500 the arm covers the knob row, the consensus finder sees 2

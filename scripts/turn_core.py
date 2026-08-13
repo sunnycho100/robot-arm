@@ -50,6 +50,19 @@ def try_grip(backend, offset, want_force):
     if not backend.approach(target):
         return 0.0, False
     _, force, holding = backend.squeeze(want_force)
+    # The miss that actually happens is straight DOWN: the fingers ride the
+    # top of the cap and the jaws slide off the metal cone to the travel limit
+    # without holding. Seen on video, and the xy search cannot fix it by
+    # construction. So before searching sideways, try lower. Two small steps,
+    # contact-checked, floor-guarded; on a backend with no vertical nudge the
+    # loop just never runs.
+    for _ in range(2):
+        if holding or not hasattr(backend, 'lower'):
+            break
+        backend.release()
+        if not backend.lower(2.0):
+            break
+        _, force, holding = backend.squeeze(want_force)
     return min(1.0, force / max(want_force, 1)), holding
 
 
