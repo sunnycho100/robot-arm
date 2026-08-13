@@ -158,6 +158,7 @@ def find_knobs(frame, rejects=None):
     between a two-minute fix and an afternoon.
     """
     white, dark = _masks(frame)
+    V = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[:, :, 2]
     # Open the mask before finding blobs. Seen obliquely, the white pointer
     # stripe on the skirt front touches the cap top and the two become ONE
     # blob, 42x66 instead of 38x38, which then fails the roundness and
@@ -180,6 +181,8 @@ def find_knobs(frame, rejects=None):
     for i in range(1, n):
         a = stats[i, cv2.CC_STAT_AREA]
         w, h = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        x0, y0, bw, bh = (stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP],
+                          stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
         if not (CAP_AREA[0] <= a <= CAP_AREA[1]):
             toss(a, f'{"too big" if a > CAP_AREA[1] else "too small"}: '
                     f'{a} px, want {CAP_AREA[0]}-{CAP_AREA[1]}'
@@ -195,6 +198,13 @@ def find_knobs(frame, rejects=None):
         # Equivalent-circle radius, not half the bounding box: a slightly elliptical
         # cap seen off-axis would otherwise read bigger than it is and push every
         # radius derived from it outward, off the knob.
+        #
+        # An inscribed circle (distance transform) was tried here to stop the
+        # GAIN knob's blob merging with the metal jack beside it. It is wrong
+        # for this shape: the pointer slot cuts into the disc from the rim, so
+        # the largest circle that fits inside avoids the slot and reads 22 px
+        # on a 39 px cap. Every knob then failed the skirt test, because the
+        # ring it samples landed inside the cap instead of on the black.
         cap_r = int(round(np.sqrt(a / np.pi)))
         # The cap must be ringed by black skirt just outside it. Sampled close in,
         # because further out is the pedal, and on a knob near the edge, the table.
@@ -204,6 +214,13 @@ def find_knobs(frame, rejects=None):
         # perfectly real knob reads only ~0.6 on the full ring from a view that
         # shows the fingers. A knob still owns most of its surround from any
         # angle; a glint on the table owns none of it.
+        # A line, not a pattern. See MARK_MAX: this is what stops an ArUco
+        # tag's cells being named as knobs, and it costs one pass over the cap.
+        mark = _mark_on_cap(V, cx, cy, cap_r)
+        if mark > MARK_MAX:
+            toss(a, f'{mark:.0%} of the face is dark, so it is patterned, '
+                    f'not a cap with a pointer on it')
+            continue
         ring = [_at(dark, cx, cy, cap_r + 3, d) for d in range(0, 360, 5)]
         k = len(ring) * 3 // 4
         best = max(sum(ring[(j + m) % len(ring)] for m in range(k))
@@ -442,6 +459,16 @@ def _contrast(p):
 # line. A speck of dirt or a screw slot would have to cover a fiftieth of the
 # cap to reach it.
 DARK_ON_CAP = 0.012
+
+# ...and how much is too much. A knob's mark is a LINE from the centre to the
+# rim, so it covers a few percent of the face. An ArUco tag is a checkerboard,
+# and its white squares are round enough, bright enough, unsaturated enough and
+# dark-ringed enough to pass every other test here: measured live with a tag on
+# the amp, two of its cells were named knob3 and knob5 alongside the real ones.
+# What separates them is how much of the face is dark. Real knobs on the bench
+# read 0.030, 0.032 and 0.041; the tag cells read 0.111 and 0.117. Nothing sits
+# near the middle, so the bar goes there.
+MARK_MAX = 0.075
 
 
 def _mark_on_cap(V, cx, cy, cap_r):

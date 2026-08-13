@@ -57,11 +57,32 @@ img{max-width:100%;height:auto}h1{font-size:16px;margin:8px}</style>
 <img src="/stream">"""
 
 
+# Detection is the whole cost of this stream and it does not need to run on
+# every frame. Measured on the Pi at 1280x960: find_knobs 100 ms, ArUco
+# another 60, jpeg encode 22, which is why the view crawled at about 3 fps and
+# felt broken while aiming. Nothing being looked for moves faster than a hand
+# moves a camera, so detect every EVERY_N frames and redraw the cached result
+# on the ones between. The picture stays live, the overlay lags a third of a
+# second, and that is invisible while pointing a camera.
+EVERY_N = 4
+_cache = {'n': 0, 'ks': {}, 'found': {}, 'rejects': [], 'tags': ([], [])}
+
+
 def annotate(frame):
     """Draw what the finder sees, and grade it, exactly as calibrate would."""
-    rejects = []
-    ks = knob.find_knobs(frame, rejects)
-    found = knob.measure(frame, ks) if ks else {}
+    _cache['n'] += 1
+    if _cache['n'] % EVERY_N == 1 or not _cache['ks']:
+        rejects = []
+        _cache['ks'] = knob.find_knobs(frame, rejects)
+        _cache['found'] = knob.measure(frame, _cache['ks']) if _cache['ks'] else {}
+        _cache['rejects'] = rejects
+        _cache['tags'] = ((compat.detect(frame, '4x4_50') if compat else ([], []))
+                          or ([], []))
+        fresh = True
+    else:
+        fresh = False
+    rejects = _cache['rejects']
+    ks, found = _cache['ks'], _cache['found']
     for name, f in found.items():
         good = f['contrast'] >= knob.MIN_CONTRAST
         col = (0, 235, 0) if good else (0, 165, 255)
@@ -76,8 +97,9 @@ def annotate(frame):
                     (f['cx'] - 90, f['cy'] - f['skirt_r'] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
 
-    RECENT.append([(v['cx'], v['cy']) for v in ks.values()])
-    del RECENT[:-WINDOW]
+    if fresh:
+        RECENT.append([(v['cx'], v['cy']) for v in ks.values()])
+        del RECENT[:-WINDOW]
     votes = {}
     for frame_hits in RECENT:
         for c in frame_hits:
@@ -131,7 +153,7 @@ def annotate(frame):
     # id. Seeing the id live is the only way to catch that while moving the
     # camera rather than three runs later.
     if compat is not None:
-        corners, ids, which = compat.detect_any(frame)
+        corners, ids = _cache['tags']
         for c, i in zip(corners, ids):
             q = c.astype(int)
             cv2.polylines(frame, [q.reshape(-1, 1, 2)], True, (255, 200, 0), 2)
