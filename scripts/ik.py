@@ -153,7 +153,7 @@ def gripper_angle_of(counts):
     return a[1] + a[2] + a[4]
 
 
-def nudged(counts, dx_mm=0.0, dy_mm=0.0, dz_mm=0.0):
+def nudged(counts, dx_mm=0.0, dy_mm=0.0, dz_mm=0.0, max_mm=NUDGE_MAX_MM):
     """Same pose, shifted by millimetres. Returns (counts, achieved_mm).
 
     Relative on purpose. arm.endpoint()'s ABSOLUTE accuracy has never been
@@ -172,9 +172,9 @@ def nudged(counts, dx_mm=0.0, dy_mm=0.0, dz_mm=0.0):
     """
     A = _arm()
     d = np.asarray([dx_mm, dy_mm, dz_mm], dtype=float) / 1000.0
-    if np.linalg.norm(d) * 1000 > NUDGE_MAX_MM:
+    if np.linalg.norm(d) * 1000 > max_mm:
         raise ValueError(f'{np.linalg.norm(d)*1000:.0f} mm is a move, not a '
-                         f'nudge (limit {NUDGE_MAX_MM:.0f} mm). Re-teach the '
+                         f'nudge (limit {max_mm:.0f} mm). Re-teach the '
                          f'pose instead.')
     here = A.endpoint(counts)
     goal = here + d
