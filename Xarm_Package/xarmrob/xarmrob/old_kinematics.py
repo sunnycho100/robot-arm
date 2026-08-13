@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Aug  6 00:35:02 2026
+
+@author: pi
+"""
+
+#!/usr/bin/env python3
  
 # ROS node to receive an Endpoint for a HiWonder xArm 1S 
 # and convert it to Joint Angles, which are published 
@@ -273,16 +281,16 @@ class XArmKinematics(Node):
         gamma5 = 0
         
         # # Gripper Assumption option 0: set the gripper to point directly down
-        #Rgrip = np.array([ [np.cos(np.pi/2), 0, np.sin(np.pi/2)], [0,1,0], [-np.sin(np.pi/2), 0, np.cos(np.pi/2)]])
+        # Rgrip = np.array([ [np.cos(np.pi/2), 0, np.sin(np.pi/2)], [0,1,0], [-np.sin(np.pi/2), 0, np.cos(np.pi/2)]])
     
         # Gripper Assumption option 1; set the Gripper is at a 45 degree angle downward in the RTZ world frame. 
         #gripper_angle = np.pi/4
         #gripper_angle = np.pi/2
-        #gripper_angle = np.pi/3
+        gripper_angle = np.pi/2
         
         # # Gripper Assumption option 2: set the gripper angle to be adjusted by height
-        z_end = xyz[2]
-        gripper_angle = z_end/.4334*-np.pi + np.pi/2
+        # z_end = xyz[2]
+        # gripper_angle = z_end/.4334*-np.pi + np.pi/2
         
         # Wrist to Gripper in the plane: 
         Rgrip = np.array([ [np.cos(gripper_angle), 0, np.sin(gripper_angle)], [0,1,0], [-np.sin(gripper_angle), 0, np.cos(gripper_angle)]])
@@ -333,7 +341,7 @@ class XArmKinematics(Node):
         
         # Compute beta4 to cancel out beta1 and beta2 (works regardless of the sign) 
         beta4 = -(beta1+beta2) + gripper_angle
-        #gamma5 = -(beta1 + beta2) - np.pi/2
+        
         joint_angles = np.asfarray(list(map(float,[alpha0, beta1, beta2, gamma3, beta4, gamma5])))
         
         return joint_angles

@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Aug  6 00:39:31 2026
+
+@author: pi
+"""
+
 /**:  # This can be used to set parameters in any namespace, any node. 
 # command_xarm:  # This is used for a single node. 
   ros__parameters:
@@ -14,8 +22,8 @@
     rotational_limits_joint_01: [-150,150]
     rotational_limits_joint_12: [-180,0]
     rotational_limits_joint_23: [0,180]
-    rotational_limits_joint_34: [-120,120]
-    rotational_limits_joint_45: [-120,120]
+    rotational_limits_joint_34: [-110,110]
+    rotational_limits_joint_45: [-100,100]
     rotational_limits_joint_56: [-110,111]
     gripper_limits: [0,90] # Gripper Opening Limits (deg) - 0 deg is open, 90 deg is closed. 
     # Rotational Axis degrees-to-commands mapping
@@ -39,7 +47,7 @@
 # /**:
   # ros__parameters:
     # Speed for controlled movement
-    endpoint_speed: 0.15
+    endpoint_speed: 0.05
     # Height offset (for safety: do dry runs in the air: suggest 0.02 m up)
     vertical_offset: 0.02
     # Sign of positive rotations w.r.t. the +y axis
