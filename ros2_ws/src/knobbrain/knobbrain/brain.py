@@ -12,6 +12,7 @@ sequencer, which is cancelled in __init__ before rclpy ever spins it.
     ros2 run knobbrain brain      # needs the backend already running
     ros2 run knobbrain go         # starts the backend too
 """
+import os
 import sys
 import threading
 import time
@@ -292,11 +293,32 @@ def tui(b):
         input('  [enter]')
 
 
+STDERR_LOG = '/tmp/knobbrain-brain.log'
+
+
+def _quiet():
+    """Point file descriptor 2 at a file so the screen stays readable.
+
+    libjpeg prints "Corrupt JPEG data: N extraneous bytes" for almost every
+    MJPG frame this camera sends. The frames decode fine and the detector is
+    unbothered, but the messages come from C, not Python, so sys.stderr cannot
+    catch them: the descriptor itself has to move. rcutils writes the ROS INFO
+    lines the same way, and those trample the screen too.
+
+    Done AFTER the node is built, so a failure to find a camera is still
+    printed where you can see it.
+    """
+    f = open(STDERR_LOG, 'w')
+    os.dup2(f.fileno(), 2)
+    return f                    # kept alive: closing it would close fd 2
+
+
 def main(args=None):
     rclpy.init(args=args)
     b = Brain()
     spin = threading.Thread(target=rclpy.spin, args=(b,), daemon=True)
     spin.start()
+    keep = _quiet()
     try:
         tui(b)
     finally:

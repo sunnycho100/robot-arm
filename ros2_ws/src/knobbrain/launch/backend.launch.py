@@ -9,8 +9,32 @@ line knows the difference.
 
 His launch file is untouched and still runs his original demo.
 """
+import os
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
+
+
+def _aruco_env():
+    """What his aruco node needs to survive on this Pi.
+
+    GSTREAMER off: his bare cv2.VideoCapture(0) lets OpenCV try GStreamer
+    first, which deadlocks against pipewire in a futex at import. The process
+    starts, never registers a node, and /aruco never publishes, which reads as
+    a tag problem and is not one. Without GStreamer the same call falls through
+    to V4L2 and opens in 0.2 s.
+
+    Qt offscreen, but only when there is no display: he draws the detected axes
+    and outlines with cv2.imshow, so run headless the node publishes exactly
+    one message and then dies on "could not connect to display". The lock is
+    one-shot, so the demo appears to work while the amp-moved check has quietly
+    stopped updating. Offscreen keeps it alive. When a display IS there, this
+    is left alone so his debug window still opens.
+    """
+    env = {'OPENCV_VIDEOIO_PRIORITY_GSTREAMER': '0'}
+    if not os.environ.get('DISPLAY'):
+        env['QT_QPA_PLATFORM'] = 'offscreen'
+    return env
 
 
 def generate_launch_description():
@@ -19,15 +43,9 @@ def generate_launch_description():
              name='command_xarm', output='screen'),
         Node(package='xarmrob', executable='xarm_kinematics',
              name='xarm_kinematics', output='screen'),
-        # His aruco.py opens the camera with a bare cv2.VideoCapture(0), which
-        # lets OpenCV try GStreamer first. Against the pipewire session running
-        # on this Pi that deadlocks in a futex at IMPORT time: the process
-        # starts, never registers a node, and /aruco simply never publishes,
-        # which reads as a tag problem and is not one. Taking GStreamer out of
-        # the running makes the same call fall through to V4L2 and open in
-        # 0.2 s. Done here as environment rather than as an edit to his file.
+        # See _aruco_env() above: two environment settings, no edit to his file.
         Node(package='mobrob', executable='aruco',
              name='aruco_tracker', output='screen',
-             additional_env={'OPENCV_VIDEOIO_PRIORITY_GSTREAMER': '0'}),
+             additional_env=_aruco_env()),
         # preset_controller deliberately absent: knobbrain replaces it.
     ])
