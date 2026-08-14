@@ -132,50 +132,88 @@ def _shape(contour):
         return None
     major, minor = max(a1, a2), min(a1, a2)
     return (hull_area / ellipse_area, area / max(hull_area, 1e-6),
-            (ex, ey), (major, minor), ang)
+            (ex, ey), (major, minor), ang, (a1, a2))
+
+
+def _circle_crop(bgr, k, pad=1.15):
+    """Warp one knob face into a circle. -> (crop, radius, inverse affine).
+
+    An angled camera turns a circular face into an ellipse, so the same
+    physical pointer direction lands at a different image angle depending only
+    on where the camera happens to be. Undo it: rotate by the fitted ellipse's
+    own angle and stretch its short axis up to match its long one, and what
+    comes back is the face as it would look straight on.
+
+    This replaces a hand-guessed 0.75 foreshortening factor that used to be
+    multiplied into the y term of the radial sampling. That constant was a
+    guess about one camera position, wrong everywhere else, and exactly the
+    kind of magic number the rest of this file avoids. The ellipse already
+    measured the foreshortening; use what it measured.
+    """
+    R = int(round(pad * k['major'] / 2.0))
+    if R < 6:
+        return None, 0, None
+    th = np.deg2rad(k['angle_deg'])
+    c, s_ = np.cos(th), np.sin(th)
+    # rotate by -angle, then scale each axis up to the long one
+    rot = np.array([[c, s_], [-s_, c]], float)
+    sc = np.diag([k['major'] / max(k['_a1'], 1e-6), k['major'] / max(k['_a2'], 1e-6)])
+    A = sc @ rot
+    t = np.array([R, R], float) - A @ np.array([k['cx'], k['cy']], float)
+    M = np.hstack([A, t.reshape(2, 1)])
+    crop = cv2.warpAffine(bgr, M, (2 * R, 2 * R), flags=cv2.INTER_LINEAR)
+    return crop, R, cv2.invertAffineTransform(M)
 
 
 def _pointer(bgr, k):
-    """Angle of the dark line printed across the cap, in image degrees.
+    """Angle of the dark line printed across the face, in NORMALISED degrees.
 
-    Searched only over the UPPER part of the silhouette. Seen at an angle a
-    knob shows its top face above and its knurled skirt below, and the
-    knurling is a fan of dark vertical lines that will happily out-vote a real
-    pointer. The top face is the part that carries the mark.
+    Normalised meaning: measured on the face after it has been warped back to
+    a circle, so the number is the knob's own rotation and does not change when
+    the camera moves. Image-frame angles do change, which is why the loop kept
+    comparing numbers that were not comparable.
 
-    Returns (angle, contrast). Contrast under about 2 means nothing was found
-    and the angle must not be used.
+    Scored against SIDE BANDS rather than on darkness alone. A ray is only a
+    pointer if it is darker than the face immediately beside it: a shadow
+    across the whole knob, or the dark gap where the skirt curves away, is
+    just as dark as a printed line but its neighbours are dark too. The
+    difference is what carries the signal.
+
+        score(t) = brightness of the two flanking rays - brightness of this ray
+
+    Returns (angle, contrast) with contrast the peak over the mean. Under
+    about 2 nothing was found and the angle must not be used.
     """
-    V = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[:, :, 2].astype(np.float32)
-    cx, cy = k['cx'], k['cy']
-    rad = k['minor'] / 2.0
-    face_y = cy - 0.20 * k['minor']          # top face sits above the centroid
-    ring = []
-    for d in range(360):
-        t = np.deg2rad(d)
-        run = 0
-        for r in np.arange(0.25 * rad, 0.95 * rad, 1.0):
-            x, y = int(cx + r * np.cos(t)), int(face_y + r * np.sin(t) * 0.75)
-            if not (0 <= y < V.shape[0] and 0 <= x < V.shape[1]):
-                break
-            ring.append(V[y, x])
-    if not ring:
+    crop, R, _ = _circle_crop(bgr, k)
+    if crop is None:
         return 0.0, 0.0
-    bar = 0.72 * float(np.median(ring))
+    V = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2].astype(np.float32)
+    radii = np.arange(0.20 * R, 0.90 * R, 1.0)
+    if not len(radii):
+        return 0.0, 0.0
+    # flank far enough to be off the line, close enough to still be on the face
+    dth = np.arctan2(3.0, 0.55 * R)
+
+    def ray(t):
+        xs = np.clip((R + radii * np.cos(t)).astype(int), 0, 2 * R - 1)
+        ys = np.clip((R + radii * np.sin(t)).astype(int), 0, 2 * R - 1)
+        return float(V[ys, xs].mean())
 
     score = np.zeros(360)
     for d in range(360):
-        t, run = np.deg2rad(d), 0
-        for r in np.arange(0.25 * rad, 0.95 * rad, 1.0):
-            x, y = int(cx + r * np.cos(t)), int(face_y + r * np.sin(t) * 0.75)
-            if not (0 <= y < V.shape[0] and 0 <= x < V.shape[1]):
-                break
-            if V[y, x] < bar:
-                run += 1
-        score[d] = run
-    smooth = np.convolve(np.r_[score[-12:], score, score[:12]],
-                         np.ones(9) / 9, 'same')[12:-12]
-    return float(smooth.argmax()), float(smooth.max() / max(smooth.mean(), 1e-6))
+        t = np.deg2rad(d)
+        score[d] = 0.5 * (ray(t - dth) + ray(t + dth)) - ray(t)
+    score = np.clip(score, 0, None)
+    sm = np.convolve(np.r_[score[-12:], score, score[:12]],
+                     np.ones(9) / 9, 'same')[12:-12]
+    # +90 for cv2.fitEllipse's convention: it reports the angle of the box's
+    # HEIGHT axis, so the warped face lands a quarter turn from where the
+    # arithmetic suggests. Measured on synthetics with known painted angles,
+    # the offset is a clean constant, and correcting it in the ROTATION
+    # instead was tried and is wrong: that swaps which axis gets stretched
+    # and the error stops being constant at all (163 to 179 degrees, all
+    # over the place). Fix the number, not the warp.
+    return float((sm.argmax() + 90) % 360), float(sm.max() / max(sm.mean(), 1e-6))
 
 
 def find(bgr, want_pointer=True):
@@ -204,12 +242,13 @@ def find(bgr, want_pointer=True):
         got = _shape(c)
         if got is None:
             continue
-        fill, convex, (ex, ey), (major, minor), ang = got
+        fill, convex, (ex, ey), (major, minor), ang, (a1, a2) = got
         if fill < MIN_FILL:
             continue
         out.append({'cx': float(ex), 'cy': float(ey), 'major': float(major),
                     'minor': float(minor), 'angle_deg': float(ang),
-                    'fill': float(fill), 'convexity': float(convex)})
+                    'fill': float(fill), 'convexity': float(convex),
+                    '_a1': float(a1), '_a2': float(a2)})
 
     # Knobs on one panel are the same object repeated. Keep the largest set
     # that agrees on size, weighted by the panel area it covers rather than by
@@ -222,10 +261,171 @@ def find(bgr, want_pointer=True):
                    key=lambda s: sum(g['major'] ** 2 for g in agree(s)))
         out = agree(best)
 
+    out = _recover(bgr, out)
     out.sort(key=lambda k: k['cx'])
     if want_pointer:
+        row = row_angle(out)
         for k in out:
             k['pointer'], k['pointer_contrast'] = _pointer(bgr, k)
+            k['pointer_rel'] = float((k['pointer'] - row) % 360.0)
+    return out
+
+
+def row_angle(knobs):
+    """Direction the knob row runs, in image degrees, by PCA on the centres.
+
+    This is the panel's own reference direction, and pointer angles reported
+    relative to it survive the camera being moved, which raw image angles do
+    not.
+
+    PCA over the centres rather than the ArUco tag's homography, deliberately.
+    The tag is one small square and this bench has punished trusting it: it
+    read as zero tags in twenty-five dictionaries when creased over the amp's
+    corner, decoded as id 17 instead of 12 when half covered, which is a wrong
+    answer rather than no answer, and it currently fuses with the GAIN knob
+    and hides it. Seven centres spanning the whole panel are a far better
+    conditioned line fit than one 112 px square, and they cannot be wrong
+    about which object was measured. Use the tag to cross-check, not to anchor.
+    """
+    if len(knobs) < 2:
+        return 0.0
+    pts = np.array([[k['cx'], k['cy']] for k in knobs], float)
+    pts -= pts.mean(axis=0)
+    _, _, vt = np.linalg.svd(pts, full_matrices=False)
+    return float(np.degrees(np.arctan2(vt[0][1], vt[0][0])) % 180.0)
+
+
+def _fit_local(bgr, cx, cy, want_major, span):
+    """Look for one knob in a small box. -> knob dict or None.
+
+    Otsu is run on the BOX, not the frame, and that is the point. Globally,
+    the MASTER knob merges with the gold script beside it and GAIN merges with
+    the tag and the jack, and a merged blob is not an ellipse so both are
+    correctly but unhelpfully dropped. Inside a box barely bigger than one
+    knob, the histogram is knob against panel and nothing else, so the split
+    lands between them and the shapes come apart.
+    """
+    h, w = bgr.shape[:2]
+    r = int(span / 2)
+    x0, y0 = max(0, int(cx - r)), max(0, int(cy - r))
+    x1, y1 = min(w, int(cx + r)), min(h, int(cy + r))
+    if x1 - x0 < 12 or y1 - y0 < 12:
+        return None
+    box = bgr[y0:y1, x0:x1]
+    V = cv2.cvtColor(box, cv2.COLOR_BGR2HSV)[:, :, 2]
+    bar, _ = cv2.threshold(V, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    m = (V >= bar).astype(np.uint8)
+    cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+    best = None
+    for c in cs:
+        got = _shape(c)
+        if got is None:
+            continue
+        fill, convex, (ex, ey), (major, minor), ang, (a1, a2) = got
+        if fill < MIN_FILL:
+            continue
+        if not 0.7 * want_major <= major <= 1.4 * want_major:
+            continue
+        # nearest to where the layout said it would be, not merely present
+        d = np.hypot(x0 + ex - cx, y0 + ey - cy)
+        if d > 0.6 * want_major:
+            continue
+        if best is None or d < best[0]:
+            best = (d, {'cx': float(x0 + ex), 'cy': float(y0 + ey),
+                        'major': float(major), 'minor': float(minor),
+                        'angle_deg': float(ang), 'fill': float(fill),
+                        'convexity': float(convex), 'recovered': True,
+                        '_a1': float(a1), '_a2': float(a2)})
+    return best[1] if best else None
+
+
+def _recover(bgr, knobs):
+    """Look again where the layout says a knob should be but none was found.
+
+    Only ever ADDS a knob that a local fit actually finds. Nothing is placed
+    because the layout expects it: a knob hidden under the gripper must stay
+    missing, since a centre invented for a shape whose edges cannot be seen is
+    how the arm closes on air.
+    """
+    if len(knobs) < 3:
+        return knobs
+    ang = np.deg2rad(row_angle(knobs))
+    u = np.array([np.cos(ang), np.sin(ang)])
+    pts = np.array([[k['cx'], k['cy']] for k in knobs], float)
+    along = pts @ u
+    order = np.argsort(along)
+    along, pts = along[order], pts[order]
+    gaps = np.diff(along)
+    if not len(gaps):
+        return knobs
+    g = float(np.median(gaps))
+    major = float(np.median([k['major'] for k in knobs]))
+    origin = pts[0] - along[0] * u
+
+    wanted = []
+    for i, gap in enumerate(gaps):                 # interior holes
+        n = int(round(gap / g))
+        for j in range(1, n):
+            wanted.append(along[i] + j * g)
+    for step in (1.0, 1.25, 1.5, 1.75, 2.0):       # just past either end
+        wanted += [along[0] - step * g, along[-1] + step * g]
+
+    found = list(knobs)
+    for a in wanted:
+        c = origin + a * u
+        if any(np.hypot(k['cx'] - c[0], k['cy'] - c[1]) < 0.7 * major for k in found):
+            continue
+        got = _fit_local(bgr, c[0], c[1], major, 1.7 * major)
+        if got is not None:
+            found.append(got)
+    found.sort(key=lambda k: k['cx'])
+    return found
+
+
+def circular_median(degrees):
+    """Median direction of a set of angles, done on the unit circle.
+
+    A plain median is wrong on angles: 359 and 1 average to 180, the exact
+    opposite of the right answer.
+    """
+    if not len(degrees):
+        return 0.0
+    v = np.exp(1j * np.radians(np.asarray(degrees, float)))
+    return float(np.degrees(np.angle(v.sum())) % 360.0)
+
+
+def find_stable(frames, min_frac=0.6):
+    """Knobs that hold still across frames, with angles taken as a circular
+    median. -> the same dicts, plus 'seen' and 'of'.
+
+    The arm throws a moving shadow across this panel and the camera reblurs on
+    every reframe, so a single frame is a sample, not an answer. Position is
+    voted on and the angle is a circular median of the frames that agreed.
+    """
+    votes = []
+    for f in frames:
+        for k in find(f):
+            for v in votes:
+                if np.hypot(v[0]['cx'] - k['cx'], v[0]['cy'] - k['cy']) < 0.5 * k['major']:
+                    v.append(k)
+                    break
+            else:
+                votes.append([k])
+    need = max(2, int(round(min_frac * len(frames))))
+    out = []
+    for v in votes:
+        if len(v) < need:
+            continue
+        k = dict(v[len(v) // 2])
+        k['cx'] = float(np.median([x['cx'] for x in v]))
+        k['cy'] = float(np.median([x['cy'] for x in v]))
+        good = [x['pointer'] for x in v if x.get('pointer_contrast', 0) >= 2.0]
+        k['pointer'] = circular_median(good) if good else 0.0
+        k['pointer_contrast'] = float(np.median([x.get('pointer_contrast', 0) for x in v]))
+        k['seen'], k['of'] = len(v), len(frames)
+        out.append(k)
+    out.sort(key=lambda k: k['cx'])
     return out
 
 
