@@ -30,7 +30,10 @@ except Exception:
     compat = None
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-WANT = 3                       # knobs on a DS-1
+# How many knobs this rig has. Was hardcoded to 3 for a DS-1, which is wrong
+# the moment the camera is pointed at anything else: an 8-knob amp read as a
+# permanent red banner. Pass it: aimlive.py [port] [want]
+WANT = int(sys.argv[2]) if len(sys.argv) > 2 else 8
 WINDOW = 12                    # frames the rolling consensus looks back over
 
 # A rolling record of what has been detected recently. A single frame cannot

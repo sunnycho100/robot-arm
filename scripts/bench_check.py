@@ -193,12 +193,20 @@ def check_camera(A):
     frames = knob_new.grab_frames(9)
     stable, flickering = (knob_new.find_knobs_stable(frames) if frames
                           else ({}, []))
-    if len(stable) == 3:
+    # What "all of them" means comes from the last calibrate, not from a
+    # number typed here. This used to demand exactly 3, which is a DS-1, and
+    # warned on every knob of an 8-knob amp.
+    try:
+        import json
+        want = len(json.load(open(os.path.expanduser('~/knobs.json'))))
+    except Exception:
+        want = len(stable)
+    if len(stable) == want:
         report('PASS', f'consensus over {len(frames)} frames: {len(stable)} knobs '
                        f'{sorted(stable)}')
     else:
         report('WARN', f'consensus over {len(frames)} frames: {len(stable)} knobs, '
-                       f'expected 3 ({len(flickering)} flickering)',
+                       f'expected {want} ({len(flickering)} flickering)',
                'usually lighting or framing: run aimlive.py and move the camera '
                'until the banner stays green')
 
