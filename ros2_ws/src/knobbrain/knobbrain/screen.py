@@ -8,7 +8,13 @@ can be tested by asserting on text. Nothing here knows what a robot is.
 """
 import math
 
-import dial
+# Installed, the siblings are inside a package; run directly for the self-test,
+# they are just files in the cwd. Both have to work: the second is how every
+# check in this package is run.
+try:
+    from knobbrain import dial
+except ImportError:
+    import dial
 
 W = 71
 

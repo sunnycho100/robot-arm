@@ -48,7 +48,7 @@ class Eyes:
         self.want = len(self.names)
         self.latest = None          # last annotated jpeg
         self.knobs = []             # last single-frame detection
-        self.note = ''              # what the TUI shows on the cam K line
+        self.note = 'starting'      # what the TUI shows on the cam K line
         self.stop = False
         threading.Thread(target=self._loop, daemon=True).start()
         self.srv = ThreadingHTTPServer(('0.0.0.0', port), self._handler())

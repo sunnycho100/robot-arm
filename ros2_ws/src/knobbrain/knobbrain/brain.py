@@ -295,13 +295,23 @@ def tui(b):
 def main(args=None):
     rclpy.init(args=args)
     b = Brain()
-    threading.Thread(target=rclpy.spin, args=(b,), daemon=True).start()
+    spin = threading.Thread(target=rclpy.spin, args=(b,), daemon=True)
+    spin.start()
     try:
         tui(b)
     finally:
+        # Order matters. Destroying the node while the other thread is inside
+        # spin() on it aborts the process from C++, which is what "terminate
+        # called without an active exception" is. Shut down first so spin
+        # returns, wait for it, and only then take the node apart.
         b.eyes.stop = True
-        b.destroy_node()
+        b.eyes.srv.shutdown()          # free 8080 for the next run
         rclpy.shutdown()
+        spin.join(timeout=2.0)
+        try:
+            b.destroy_node()
+        except Exception:
+            pass                       # already gone with the context
     return 0
 
 

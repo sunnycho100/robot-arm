@@ -18,6 +18,7 @@ import ast
 import hashlib
 import pathlib
 import py_compile
+import subprocess
 import sys
 
 HERE = pathlib.Path(__file__).parent
@@ -113,10 +114,25 @@ def main():
     else:
         print('  (no repo alongside: detector drift check skipped)')
 
-    # everything that does not need ROS must import cleanly
+    # Everything that does not need ROS must import BOTH ways: as loose files,
+    # which is how these self-checks run, and as an installed package, which is
+    # how ros2 run loads them. A bare `import dial` satisfies the first and
+    # fails the second, and the failure only shows up on the Pi.
     for m in ('dial', 'screen', 'cams', 'eyes', 'macro'):
         py_compile.compile(str(HERE / f'{m}.py'), doraise=True)
-        __import__(m)
+        __import__(m)                       # loose, from this directory
+    # In a FRESH interpreter, and from a directory where the loose copies are
+    # not importable. In this process they are already in sys.modules, so a
+    # bare `import dial` inside a package module would find the cached one and
+    # the check would pass on a package that cannot actually be installed.
+    probe = ('import knobbrain.dial, knobbrain.screen, knobbrain.cams, '
+             'knobbrain.eyes, knobbrain.macro')
+    r = subprocess.run([sys.executable, '-c', probe], cwd=str(PKG),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, (
+        'a module imports its siblings in a way that only works when they are '
+        'loose files in the cwd. ros2 run loads them as an installed package '
+        'and will fail:\n' + r.stderr.strip().splitlines()[-1])
     for m in ('brain', 'go'):
         py_compile.compile(str(HERE / f'{m}.py'), doraise=True)
 
