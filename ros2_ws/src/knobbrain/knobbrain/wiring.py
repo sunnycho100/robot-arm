@@ -101,12 +101,17 @@ def main():
     assert "'launch/backend.launch.py'" in st, \
         'the launch file is not installed, so ros2 launch will not find it'
 
-    # the detector copy has not drifted from the one the checks exercise
-    a = hashlib.sha256((HERE / 'ampknobs.py').read_bytes()).hexdigest()
-    b = hashlib.sha256(REPO_DETECTOR.read_bytes()).hexdigest()
-    assert a == b, ('the packaged detector differs from pi/cv/ampknobs.py. '
-                    'Copy it across before deploying, or the bench and the '
-                    'demo are running different code.')
+    # The detector copy has not drifted from the one the checks exercise. Only
+    # checkable beside the repo: on a Pi this package is deployed alone, and
+    # there is nothing to compare against.
+    if REPO_DETECTOR.exists():
+        a = hashlib.sha256((HERE / 'ampknobs.py').read_bytes()).hexdigest()
+        b = hashlib.sha256(REPO_DETECTOR.read_bytes()).hexdigest()
+        assert a == b, ('the packaged detector differs from pi/cv/ampknobs.py. '
+                        'Copy it across before deploying, or the bench and the '
+                        'demo are running different code.')
+    else:
+        print('  (no repo alongside: detector drift check skipped)')
 
     # everything that does not need ROS must import cleanly
     for m in ('dial', 'screen', 'cams', 'eyes', 'macro'):
