@@ -20,33 +20,32 @@ try:
 except ImportError:
     import ampknobs
 
-NAMES = ['volume', 'treble', 'high mid', 'low mid', 'bass', 'level',
-         'drive', 'gain']
 FRAMES = 9          # frames per consensus read
 EVERY_N = 3         # detect on one frame in three; the rest reuse the overlay
 
 
-def names_of(knobs):
-    """Left to right, but only when all eight are there.
+def names_of(knobs, names):
+    """Left to right, but only when every one of them is there.
 
     With one missing, every name past the gap belongs to its neighbour. Placing
     them on an even grid does not rescue it either: this panel is not evenly
     spaced, the drive-to-gain gap being 175 px against a 110 px pitch.
     """
-    if len(knobs) != len(NAMES):
+    if len(knobs) != len(names):
         return [str(i) for i in range(1, len(knobs) + 1)]
-    return list(NAMES)
+    return list(names)
 
 
 class Eyes:
-    def __init__(self, device, port=8080, want=8):
+    def __init__(self, device, names, port=8080):
         self.cap = cv2.VideoCapture(device, cv2.CAP_V4L2)   # never the default
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)        # backend: it deadlocks
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
         if not self.cap.isOpened():
             raise SystemExit(f'cannot open {device}. Free it with: '
                              f'fuser -k {device}')
-        self.want = want
+        self.names = list(names)
+        self.want = len(self.names)
         self.latest = None          # last annotated jpeg
         self.knobs = []             # last single-frame detection
         self.note = ''              # what the TUI shows on the cam K line
@@ -71,7 +70,7 @@ class Eyes:
 
     def _draw(self, frame):
         ks = self.knobs
-        labels = names_of(ks)
+        labels = names_of(ks, self.names)
         for i, k in enumerate(ks):
             c = (int(k['cx']), int(k['cy']))
             good = k.get('pointer_contrast', 0) >= 2.0
@@ -106,7 +105,7 @@ class Eyes:
             else:
                 time.sleep(0.05)
         ks = ampknobs.find_stable(frames)       # already sorted left to right
-        if len(ks) != len(NAMES):
+        if len(ks) != self.want:
             self.note = f'{len(ks)}/{self.want} knobs, cannot name them'
             return {}
         self.note = f'{len(ks)}/{self.want} knobs'
@@ -114,7 +113,7 @@ class Eyes:
         # but leaves 'pointer_rel' at whatever the middle frame happened to say,
         # so take the row off the median here rather than trusting the stale one.
         row = ampknobs.row_angle(ks)
-        return {n: (k['pointer'] - row) % 360.0 for n, k in zip(NAMES, ks)}
+        return {n: (k['pointer'] - row) % 360.0 for n, k in zip(self.names, ks)}
 
     def _handler(eyes_self):
         class H(BaseHTTPRequestHandler):

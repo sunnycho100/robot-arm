@@ -24,22 +24,6 @@ HERE = pathlib.Path(__file__).parent
 PKG = HERE.parent
 REPO_DETECTOR = PKG.parents[2] / 'cv' / 'ampknobs.py'
 
-# His macro, from preset_controller.build_macro_sequence(), in his order.
-HIS_MACRO = [
-    '_endpoint',   # pull back to the safe pose
-    '_grip',       # open
-    '_wrist',      # square the wrist
-    '_endpoint',   # hover the knob
-    '_endpoint',   # plunge
-    '_grip',       # close
-    '_wrist',      # THE TWIST
-    '_grip',       # open
-    '_wrist',      # untwist before lifting, or it snags
-    '_endpoint',   # raise
-    '_endpoint',   # park clear of the camera
-]
-
-
 def tree(name):
     src = (HERE / name).read_text()
     py_compile.compile(str(HERE / name), doraise=True)
@@ -81,12 +65,25 @@ def main():
     for pub in ('pub_endpoint', 'pub_gripper', 'pub_wrist'):
         assert pub in src, f'{pub} unused: we are not driving his stack'
 
-    # the bite is his macro, in his order
-    got = [c for c in calls_in(fns['bite'])
-           if c in ('_endpoint', '_grip', '_wrist')]
-    assert got == HIS_MACRO, f'the macro was reordered:\n  his {HIS_MACRO}\n' \
-                             f'  ours {got}'
-    assert 'wrist_target' in src, 'the twist size must come from dial.py'
+    # the bite REPLAYS his block rather than re-implementing it
+    bite = ast.get_source_segment(src, fns['bite'])
+    assert 'self.blocks[name]' in bite, 'the bite must come from his macro'
+    assert 'macro.twist_at' in bite and 'macro.home_of' in bite, \
+        'the twist and the approach angle must be found in his block, not typed'
+    assert 'wrist_target' in bite, 'the twist size must come from dial.py'
+    # every step type he can emit is handled, so a new one is an error and not
+    # a silently skipped move
+    do = ast.get_source_segment(src, fns['_do'])
+    for t in ('hover', 'plunge', 'gripper', 'twist'):
+        assert f"'{t}'" in do, f'his {t} step is not handled'
+    assert 'raise ValueError' in do, 'an unknown step must be loud'
+
+    # NOTHING of his is copied as a literal. He changed six offsets and added a
+    # per-knob wrist flip between his snapshot and his Pi; a number frozen here
+    # would have swung the wrist the wrong way on four of the eight knobs.
+    for stale in ('1.57', '2.00', '-1.14', '0.6', 'dist lev', 'initial'):
+        assert stale not in src, f'{stale!r} is copied out of his file'
+    assert 'macro.blocks' in src, 'his macro is never read'
 
     # the launch file drops his sequencer and keeps the rest
     lt = (PKG / 'launch' / 'backend.launch.py').read_text()
@@ -112,13 +109,13 @@ def main():
                     'demo are running different code.')
 
     # everything that does not need ROS must import cleanly
-    for m in ('dial', 'screen', 'cams', 'eyes'):
+    for m in ('dial', 'screen', 'cams', 'eyes', 'macro'):
         py_compile.compile(str(HERE / f'{m}.py'), doraise=True)
         __import__(m)
     for m in ('brain', 'go'):
         py_compile.compile(str(HERE / f'{m}.py'), doraise=True)
 
-    print('wiring: 16 assertions pass')
+    print('wiring: 24 assertions pass')
     return 0
 
 

@@ -6,11 +6,18 @@ can be tested by asserting on text. Nothing here knows what a robot is.
 
     python3 screen.py      # self-test
 """
+import math
+
 import dial
 
 W = 71
-NAMES = ['volume', 'treble', 'high mid', 'low mid', 'bass', 'level',
-         'drive', 'gain']
+
+# The grid the prompt suggests typing on. This is a HUMAN convention, not a
+# physical constant: his twist measures 24.638 degrees, so nothing round is an
+# exact multiple of a bite and asking for 49 or 74 would be absurd. What a
+# target costs in bites is worked out from his real twist in dial.py; this is
+# only what the screen advises.
+STEP = 25.0
 
 
 def _rule(text=''):
@@ -49,7 +56,8 @@ def render(knobs, status):
           '',
           '/' * W,
           _rule('enter  [knob] [degrees]        e.g.   2 75'),
-          _rule('degrees as multiples of 25:  25  50  75  100  125  150'),
+          _rule('degrees as multiples of {:.0f}:  {}'.format(
+              STEP, '  '.join(f'{STEP*i:.0f}' for i in range(1, 7)))),
           _rule('state  re-read     zero  recalibrate     q  quit'),
           '/' * W, '']
     return '\n'.join(L)
@@ -85,20 +93,22 @@ def parse(line, n=8):
     if not dial.in_range(deg):
         return ('error', f'{deg:.0f} is outside the knob travel '
                          f'(0 to {dial.FULL_TRAVEL:.0f})')
-    return ('turn', i, deg, abs(deg % dial.BITE_DEG) < 1e-6)
+    return ('turn', i, deg, abs(deg % STEP) < 1e-6)
 
 
 def nearest_multiples(deg):
-    lo = math.floor(deg / dial.BITE_DEG) * dial.BITE_DEG
-    return lo, lo + dial.BITE_DEG
-
-
-import math  # noqa: E402  (used only by nearest_multiples, kept beside it)
+    lo = math.floor(deg / STEP) * STEP
+    return lo, lo + STEP
 
 
 def _selftest():
+    # His names, as build_macro_sequence() gives them. Note 'dist lev': the
+    # panel is silkscreened LEVEL, but this file does not get to rename his
+    # table key, because that key is what addresses the offset.
+    names = ['volume', 'treble', 'high mid', 'low mid', 'bass', 'dist lev',
+             'drive', 'gain']
     knobs = [{'name': n, 'now': None, 'target': None, 'last': None}
-             for n in NAMES]
+             for n in names]
     knobs[1].update(now=50.0, target=75.0, last=23.0)
     knobs[4].update(now=25.0, target=25.0, last=26.0)
     out = render(knobs, {'zero': '00:14', 'amp': 'LOCKED', 'camK': '8/8 knobs',
@@ -106,7 +116,7 @@ def _selftest():
     assert 'K N O B   B R A I N' in out
     assert '[##-.........]' in out, 'treble owes one bite'
     assert '   +23' in out
-    assert 'high mid' in out and 'gain' in out
+    assert 'high mid' in out and 'dist lev' in out
     assert out.count('\n') > 20
     # every line fits the terminal the demo will run in
     assert max(len(s) for s in out.splitlines()) <= 80, 'a line wraps'
@@ -126,7 +136,11 @@ def _selftest():
     assert '  ??' in render([{'name': 'volume', 'now': None, 'target': None,
                               'last': None}], {})
 
-    print('screen: 15 assertions pass')
+    # the names are his, whatever he calls them: nothing here is a fixed list
+    odd = render([{'name': 'wobble', 'now': 0.0, 'target': None, 'last': None}], {})
+    assert 'wobble' in odd
+
+    print('screen: 16 assertions pass')
 
 
 if __name__ == '__main__':

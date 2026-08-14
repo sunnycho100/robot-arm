@@ -31,6 +31,7 @@ def _stub():
 _stub()
 import brain    # noqa: E402
 import dial     # noqa: E402
+import macro    # noqa: E402
 
 
 class FakeArm:
@@ -59,7 +60,72 @@ def run(arm, target=75.0):
     return '\n'.join(str(s) for s in out)
 
 
+class FakeBrain:
+    """Enough of Brain for its real bite() to run, recording what it published."""
+
+    def __init__(self, flipped=()):
+        self.park, self.blocks = macro.blocks(macro._queue(flipped))
+        self.sent = []
+        self.arm = 'PARKED'
+
+    def _endpoint(self, name, z=None):
+        self.sent.append(('hover' if z is None else 'plunge', name, z))
+
+    def _grip(self, v):
+        self.sent.append(('gripper', v))
+
+    def _wrist(self, v):
+        self.sent.append(('twist', round(v, 4)))
+
+    _do = brain.Brain._do
+    bite = brain.Brain.bite
+
+
+def check_bite_replays_his_block():
+    """The bite must be his steps, in his order, with only the twist changed."""
+    import time
+    slept = []
+    real, time.sleep = time.sleep, slept.append
+    try:
+        for flipped in ((), ('bass', 'gain')):
+            for knob in ('treble', 'bass'):
+                b = FakeBrain(flipped)
+                b.bite(knob, 50.0)
+                block = b.blocks[knob]
+                i = macro.twist_at(block)
+                home = macro.home_of(block, i)
+
+                # his step types, in his order, plus our park at the end
+                assert [s[0] for s in b.sent] == \
+                    [a['type'] for a in block] + ['hover'], b.sent
+                assert b.sent[-1] == ('hover', b.park, None), 'must park to see'
+
+                # every value is his except the one twist we are deciding
+                for j, (a, got) in enumerate(zip(block, b.sent)):
+                    if a['type'] == 'gripper':
+                        assert got[1] == a['value'], 'gripper value changed'
+                    elif a['type'] == 'plunge':
+                        assert got[2] == a['z'], 'his plunge depth changed'
+                    elif a['type'] == 'twist' and j != i:
+                        assert got[1] == round(a['value'], 4), \
+                            'a wrist angle other than the turn was changed'
+                # the turn: from THIS knob's approach angle, by what we asked
+                import math
+                assert abs(b.sent[i][1] - (home + math.radians(50.0))) < 1e-3
+                # and the flipped knobs really are approached from the far side
+                want = -1.57 if knob in flipped else 1.57
+                assert home == want, (knob, flipped, home)
+
+                # his waits are used, not ours
+                assert slept[:len(block)] == [a['wait'] for a in block]
+                slept.clear()
+    finally:
+        time.sleep = real
+
+
 def main():
+    check_bite_replays_his_block()
+
     # a grip that works: arrives, and in the number of bites we promised
     a = FakeArm(keep=1.0)
     assert 'DONE' in run(a)
@@ -114,7 +180,7 @@ def main():
     assert len(a.bites) == dial.MAX_BITES, a.bites
     assert 'gave up' in log, log
 
-    print(f'dryrun: 9 scenarios pass, {dial.MAX_BITES} bite cap holds')
+    print(f'dryrun: 10 scenarios pass, {dial.MAX_BITES} bite cap holds')
     return 0
 
 

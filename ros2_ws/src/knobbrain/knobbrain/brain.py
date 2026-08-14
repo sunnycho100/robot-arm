@@ -23,18 +23,15 @@ from xarmrob_interfaces.msg import ME439PointXYZ
 from xarmrob.preset_controller import PresetController
 
 try:
-    from knobbrain import cams, dial, eyes, screen
+    from knobbrain import cams, dial, eyes, macro, screen
 except ImportError:
     import cams
     import dial
     import eyes
+    import macro
     import screen
 
-# Our display names against the keys in his offsets table. Only one differs.
-OFFSET_KEY = {'level': 'dist lev'}
-
 TAG_MOVED_M = 0.010     # 10 mm of tag drift invalidates every stored position
-PLUNGE_Z = 0.6          # inches, straight from his macro
 
 
 class Brain(PresetController):
@@ -44,6 +41,15 @@ class Brain(PresetController):
         # This is not a race: a rclpy timer cannot fire until rclpy.spin() runs,
         # and spin happens after __init__ has returned.
         self.timer.cancel()
+
+        # Read his macro before discarding it. Everything we would otherwise
+        # have copied out of his file lives in here: the knob names and their
+        # order, the wrist angle each is approached at (he flips four of them),
+        # how far his twist goes, the plunge depth, the gripper values, and his
+        # waits. Copying any of it would go stale the next time he retunes.
+        self.park, self.blocks = macro.blocks(self.action_queue)
+        self.knobs = list(self.blocks)
+        dial.adopt(macro.bite_deg(next(iter(self.blocks.values()))))
         self.action_queue = []
 
         self.first_lock = None      # the two transforms as first seen
@@ -67,7 +73,7 @@ class Brain(PresetController):
             cam, why = cams.knob_camera()
             if cam is None:
                 raise SystemExit('knob camera: ' + why)
-        self.eyes = eyes.Eyes(cam)
+        self.eyes = eyes.Eyes(cam, self.knobs)
         self.get_logger().info(f'knob camera {cam}, tags on /dev/video0')
 
     # ---------------------------------------------------------------- tags
@@ -102,8 +108,7 @@ class Brain(PresetController):
 
     # --------------------------------------------------------------- motion
     def _endpoint(self, name, z=None):
-        key = OFFSET_KEY.get(name, name)
-        c = self.calculate_robot_coords(key, z_override=z)
+        c = self.calculate_robot_coords(name, z_override=z)
         m = ME439PointXYZ()
         m.xyz = [float(c[0]), float(c[1]), float(c[2])]
         self.pub_endpoint.publish(m)
@@ -118,31 +123,45 @@ class Brain(PresetController):
         m.data = float(v)
         self.pub_wrist.publish(m)
 
-    def bite(self, name, deg):
-        """One grip-twist-release. His macro, with only the twist size changed.
+    def _do(self, action, value=None):
+        t = action['type']
+        if t == 'hover':
+            self._endpoint(action['target'])
+        elif t == 'plunge':
+            self._endpoint(action['target'], action['z'])
+        elif t == 'gripper':
+            self._grip(action['value'])
+        elif t == 'twist':
+            self._wrist(action['value'] if value is None else value)
+        else:
+            raise ValueError(f'his macro has a step we do not know: {t}')
 
-        The waits are his too. They exist because his stack has no motion-done
-        feedback of any kind: read_bus_servos() is stubbed out in the provided
-        driver, so there is nothing to wait ON. Sleeping is not laziness here,
-        it is the only synchronisation available.
+    def bite(self, name, deg):
+        """One grip-twist-release: HIS block for this knob, replayed.
+
+        Not a re-implementation of his sequence but a replay of it, straight
+        off build_macro_sequence(). The only substitution is the one number we
+        are actually deciding, the size of the twist. Everything else, his
+        order, his plunge depth, his gripper values and the wrist angle he
+        approaches this particular knob at, comes across untouched, so him
+        retuning the demo retunes ours.
+
+        The waits are his too, and they are not laziness: his stack has no
+        motion-done feedback of any kind, since read_bus_servos() is stubbed
+        out in the provided driver. There is nothing to wait ON.
         """
+        block = self.blocks[name]
+        i = macro.twist_at(block)
+        home = macro.home_of(block, i)
         self.arm = 'MOVING'
-        for step in (
-                lambda: self._endpoint('initial'),      3.0,
-                lambda: self._grip(dial.GRIP_OPEN),     0.5,
-                lambda: self._wrist(dial.WRIST_HOME),   0.5,
-                lambda: self._endpoint(name),           3.0,
-                lambda: self._endpoint(name, PLUNGE_Z), 2.0,
-                lambda: self._grip(dial.GRIP_CLOSED),   2.0,
-                lambda: self._wrist(dial.wrist_target(deg)), 2.0,
-                lambda: self._grip(dial.GRIP_OPEN),     2.0,
-                lambda: self._wrist(dial.WRIST_HOME),   2.0,
-                lambda: self._endpoint(name),           2.0,
-                lambda: self._endpoint('initial'),      3.0):
-            if callable(step):
-                step()
-            else:
-                time.sleep(step)
+        for j, action in enumerate(block):
+            self._do(action, dial.wrist_target(deg, home) if j == i else None)
+            time.sleep(action['wait'])
+        # Back to his safe pose, which is where the next block would have
+        # started anyway. A bite that ends hovering over the knob leaves the
+        # arm in front of the camera we are about to read with.
+        self._endpoint(self.park)
+        time.sleep(block[0]['wait'])
         self.arm = 'PARKED'
 
     # --------------------------------------------------------------- reading
@@ -215,7 +234,7 @@ def tui(b):
     say = print
     while True:
         rows = [{'name': n, 'now': b.now.get(n), 'target': b.target.get(n),
-                 'last': b.last.get(n)} for n in eyes.NAMES]
+                 'last': b.last.get(n)} for n in b.knobs]
         print('\033[2J\033[H' + screen.render(rows, {
             'zero': dial.load_session().get('stamp', '--:--'),
             'amp': 'LOCKED' if b.locked() else 'WAITING',
@@ -224,7 +243,7 @@ def tui(b):
         if not b.zero:
             print('  no session zero yet. press  c  to calibrate.')
         try:
-            cmd = screen.parse(input(' > '), len(eyes.NAMES))
+            cmd = screen.parse(input(' > '), len(b.knobs))
         except (EOFError, KeyboardInterrupt):
             return
         if cmd[0] == 'quit':
@@ -245,7 +264,7 @@ def tui(b):
             continue
 
         _, i, deg, multiple = cmd
-        name = eyes.NAMES[i - 1]
+        name = b.knobs[i - 1]
         if not b.locked():
             say('  the amp is not located yet: both tags must be in view.')
             input('  [enter]')

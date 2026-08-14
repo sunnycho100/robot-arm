@@ -17,21 +17,29 @@ import json
 import math
 import os
 
-BITE_DEG = 25.0      # one bite is his macro: grip, twist, release. Unchanged.
+BITE_DEG = 24.638    # PLACEHOLDER. adopt() overwrites it with the size of his
+                     # own twist, read off his macro at startup. The default is
+                     # only what his 14 Aug file happened to say.
 TOL_DEG = 8.0        # close enough. Below this we stop rather than fuss.
 MAX_BITES = 6        # converge, but never grind. See next_bite().
 FULL_TRAVEL = 300.0  # ASSUMED pot travel. Measure stop to stop and fix this.
-
-# His macro's numbers, from preset_controller.build_macro_sequence().
-WRIST_HOME = 1.57    # rad. Wrist square to the panel, the pose he grips from.
-GRIP_OPEN = 0.0
-GRIP_CLOSED = 1.57
 
 # Whether a positive wrist command turns the knob clockwise as the knob camera
 # sees it. UNVERIFIED: it depends on which side the camera sits, and no run has
 # checked it. The first bite of a session proves it, and check_bite() below
 # reports 'backwards' rather than letting the loop chase its own tail.
 WRIST_SIGN = 1.0
+
+
+def adopt(bite):
+    """Take the bite size from his macro rather than from this file.
+
+    Called once at startup with what macro.bite_deg() found. Everything that
+    talks about bites, including the TUI's advice to use multiples, then
+    follows his demo automatically if he retunes it.
+    """
+    global BITE_DEG
+    BITE_DEG = float(bite)
 
 SESSION = os.path.expanduser('~/.knobbrain.json')
 
@@ -81,12 +89,23 @@ def bites_planned(now, target):
     does not use it.
     """
     err = abs(target - now)
-    return 0 if err <= TOL_DEG else int(math.ceil(err / BITE_DEG))
+    if err <= TOL_DEG:
+        return 0
+    # Bites until inside tolerance, not until exact. His twist is 24.6 degrees,
+    # so three of them leave 75 short by 1.1, and announcing four would promise
+    # a bite the loop is never going to take.
+    return int(math.ceil((err - TOL_DEG) / BITE_DEG))
 
 
-def wrist_target(bite_deg):
-    """The absolute /wrist_roll_desired value for a bite of this size."""
-    return WRIST_HOME + math.radians(bite_deg) * WRIST_SIGN
+def wrist_target(bite_deg, home):
+    """The absolute /wrist_roll_desired value for a bite of this size.
+
+    `home` is this knob's own approach angle, taken from his macro. He flips
+    four of the eight to -1.57 so the wrist servo stays off its stop, and a
+    turn is a rotation FROM wherever the wrist already is, so the same bite is
+    home + the same delta on both sides of the panel.
+    """
+    return home + math.radians(bite_deg) * WRIST_SIGN
 
 
 def check_bite(commanded, delivered):
@@ -137,11 +156,11 @@ def _selftest():
     assert not in_range(320.0)
 
     # next_bite: full bites while far, the remainder when close, stop inside tol
-    assert next_bite(0, 75) == 25.0
-    assert next_bite(50, 75) == 25.0
+    assert next_bite(0, 300) == BITE_DEG, 'a full bite while far away'
+    assert next_bite(50, 75) == BITE_DEG
     assert abs(next_bite(60, 75) - 15.0) < 1e-9, 'partial correction bite'
     assert next_bite(72, 75) == 0.0, 'within tolerance, do not fuss'
-    assert next_bite(75, 25) == -25.0, 'counterclockwise is just a sign'
+    assert next_bite(75, 25) == -BITE_DEG, 'counterclockwise is just a sign'
     assert next_bite(0, 300, taken=MAX_BITES) == 0.0, 'the cap stops grinding'
 
     # a slipping grip still converges, and never overshoots past tolerance
@@ -158,14 +177,23 @@ def _selftest():
         now += b
         taken += 1
     assert taken == bites_planned(0, 75) == 3, taken
-    assert abs(now - 75.0) < 1e-9
+    # 3 x 24.638 is 73.9, not 75: his twist does not divide a round target, and
+    # stopping inside tolerance is the whole point of having one.
+    assert abs(now - 75.0) <= TOL_DEG, now
 
     assert bites_planned(0, 0) == 0
     assert bites_planned(0, 100) == 4
 
-    # the wrist command his macro would have sent
-    assert abs(wrist_target(25.0) - 2.006) < 0.01, 'his 1.57 -> 2.00 twist'
-    assert wrist_target(-25.0) < WRIST_HOME, 'counterclockwise goes below home'
+    # the wrist command his macro would have sent, from both approach angles
+    assert abs(wrist_target(24.638, 1.57) - 2.00) < 0.001, 'his standard twist'
+    assert abs(wrist_target(24.638, -1.57) + 1.14) < 0.001, 'his flipped twist'
+    assert wrist_target(-25.0, 1.57) < 1.57, 'counterclockwise goes below home'
+    assert wrist_target(-25.0, -1.57) < -1.57, 'and does so when flipped too'
+
+    # the bite size is his, not ours
+    adopt(45.0)
+    assert BITE_DEG == 45.0 and next_bite(0, 100) == 45.0
+    adopt(24.638)
 
     assert check_bite(25, 23) == 'ok'
     assert check_bite(25, -22) == 'backwards'

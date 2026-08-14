@@ -71,6 +71,9 @@ STAGES = [
      'the TUI renders inside 80 columns and refuses nonsense commands'),
     ('cams',     'ros2_ws/src/knobbrain/knobbrain', 'cams.py',
      'the knob camera is picked by serial, and a swap is named not absorbed'),
+    ('macro',    'ros2_ws/src/knobbrain/knobbrain', 'macro.py',
+     'his macro is read for the knob list, per-knob wrist flip, twist size, '
+     'plunge depth and waits, instead of any of it being copied'),
     ('wiring',   'ros2_ws/src/knobbrain/knobbrain', 'wiring.py',
      'his sequencer is cancelled, his three topics are the only interface, '
      'and our bite is his macro in his order'),
