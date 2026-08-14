@@ -23,12 +23,17 @@ size, and a partly covered knob stops being one, which is the correct answer.
 So each contour is fitted with an ellipse and scored on how much of that
 ellipse it actually fills. Measured across all three views:
 
-    real knobs        fill 0.98 to 1.00      convexity 0.94 to 0.98
-    everything else   fill 0.64 to 0.95      convexity 0.62 to 0.97
+    real knobs        0.96 to 0.99
+    everything else   0.82 to 0.92
 
-Nothing lands between 0.95 and 0.98, so the bar goes at 0.97, and convexity at
-0.94 as a second, cheap opinion. Across the three frames that is 20 knobs found
-and ZERO false positives, without one threshold about colour, size or position.
+Nothing lands between 0.92 and 0.96, so the bar goes at 0.94. Across four views
+that is 26 knobs found and ZERO false positives, without a single threshold
+about colour, size or position.
+
+It is measured on the CONVEX HULL of the contour, which matters: the printed
+pointer is a notch bitten out of the silhouette, and judged on the raw contour
+a real knob scores 0.965 and gets thrown away for carrying the very mark that
+identifies it.
 
 What this deliberately does NOT assume
 --------------------------------------
@@ -39,52 +44,94 @@ What this deliberately does NOT assume
 - how many knobs there are.
 - a fixed brightness. The threshold is Otsu's, taken per frame, so a camera
   that drifts warm or an arm that shades the panel does not move the bar.
+- ANY COLOUR AT ALL. Under the bench lamp these cream knobs photograph orange,
+  at a median saturation of 219 where an earlier version demanded under 130.
+  Shape is colour-blind, so the colour test was dropped rather than retuned.
 """
 import sys
 
 import numpy as np
 import cv2
 
-# The two shape gates. See the docstring for the measurements behind them.
-MIN_FILL = 0.97          # contour area / fitted-ellipse area
-MIN_CONVEX = 0.94        # contour area / convex-hull area
+# The one shape gate, measured on the CONVEX OUTLINE. See the docstring.
+MIN_FILL = 0.94          # convex-hull area / fitted-ellipse area
 
 MIN_AREA = 800           # a knob smaller than this is unusable anyway
-MAX_S = 130              # a knob is a LOW-saturation colour: cream or metal
-OPEN_FRAC = 0.10         # opening kernel, as a fraction of the median blob size
+OPEN_FRAC = 0.20         # opening kernel, as a fraction of the median blob size.
+                         # Sized to erase thin bright strokes, because the two
+                         # knobs that go missing are always the ones FUSED to
+                         # something: MASTER to the gold Rumble script beside
+                         # it, GAIN to the tag and jack. A fused blob is not an
+                         # ellipse, so it fails honestly rather than landing
+                         # somewhere wrong. Swept on four views: 0.10 gives
+                         # 6/6/7/6, the 0.18-0.22 plateau gives 7/6/8/6, and
+                         # 0.26 starts inventing a ninth knob on an eight-knob
+                         # amp. 0.20 is the middle of the plateau.
 
 
 def _mask(bgr):
-    """Bright, low-saturation pixels. Otsu picks the brightness bar per frame.
+    """Bright pixels, with the bar picked by Otsu from this frame's histogram.
 
-    Fixed thresholds were what broke earlier: a cream knob measures around 60
-    saturation, so a camera warming up pushed it over a hand-set bar and knobs
-    vanished mid-run. Otsu re-derives the split from this frame's own
-    histogram, so shade, exposure and colour cast move the bar with the scene.
+    BRIGHTNESS ONLY. There is deliberately no colour test, and that is the
+    single most important thing in this file.
+
+    Every earlier version asked "is it cream or metal", i.e. low saturation,
+    because a knob is a pale thing. That is true of the OBJECT and false of the
+    IMAGE: under the bench's warm lamp the same knobs photograph strongly
+    orange. Measured on a live frame, median saturation across the whole image
+    was 219 against a gate of 130, so the entire picture failed a test about
+    what colour the knobs "are". The other three views measured 41, 50 and 114,
+    which is why the gate looked reasonable until it was not.
+
+    Contrast is what actually holds. A knob is the bright thing on a dark
+    panel under any light, any white balance, any exposure, and Otsu finds that
+    split from the frame itself with nothing typed in. Colour discrimination is
+    given up entirely and paid for by shape, which is colour-blind: across four
+    views, brightness plus the two shape gates found every knob with no false
+    positives, so the colour test was never carrying its weight.
     """
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    S, V = hsv[:, :, 1], hsv[:, :, 2]
-    low_s = S < MAX_S
-    if low_s.sum() < 100:
-        return np.zeros(S.shape, np.uint8), 0
-    bar, _ = cv2.threshold(V[low_s], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return ((V >= bar) & low_s).astype(np.uint8), float(bar)
+    V = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[:, :, 2]
+    bar, _ = cv2.threshold(V, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return (V >= bar).astype(np.uint8), float(bar)
 
 
 def _shape(contour):
-    """-> (fill, convexity, (cx, cy), (major, minor), angle) or None."""
+    """-> (fill, convexity, (cx, cy), (major, minor), angle) or None.
+
+    Everything is measured on the CONVEX HULL, not the raw contour, and that
+    is the whole trick. The printed pointer is a thin dark line from centre to
+    rim, so in the mask it is a notch bitten out of the silhouette. Judged on
+    the raw contour a perfectly good knob scored fill 0.965 and convexity
+    0.92 and was thrown away, the notch being counted as evidence against the
+    very object it identifies.
+
+    Filling the notch with a morphological closing was tried first and is a
+    trap: the kernel that fills a 5 px notch also bridges a knob to whatever
+    bright thing is 10 px away, which on this panel is the gold Rumble script
+    at one end and the tag and jack at the other, so two knobs went missing at
+    exactly the setting that rescued the rest.
+
+    A hull ignores the notch for free and needs no kernel. What is being asked
+    is whether the OUTLINE of the thing is an ellipse, and a cylinder's
+    outline does not care what is printed on its face.
+    """
     if len(contour) < 5:
         return None
     area = cv2.contourArea(contour)
     if area < MIN_AREA:
         return None
-    hull = cv2.contourArea(cv2.convexHull(contour))
-    (ex, ey), (a1, a2), ang = cv2.fitEllipse(contour)
+    hull = cv2.convexHull(contour)
+    hull_area = cv2.contourArea(hull)
+    # A hull can collapse to fewer than the five points fitEllipse needs, on a
+    # blob that is essentially a triangle. That is not a knob either way.
+    if len(hull) < 5:
+        return None
+    (ex, ey), (a1, a2), ang = cv2.fitEllipse(hull)
     ellipse_area = np.pi * a1 * a2 / 4.0
     if ellipse_area <= 0:
         return None
     major, minor = max(a1, a2), min(a1, a2)
-    return (area / ellipse_area, area / max(hull, 1e-6),
+    return (hull_area / ellipse_area, area / max(hull_area, 1e-6),
             (ex, ey), (major, minor), ang)
 
 
@@ -158,7 +205,7 @@ def find(bgr, want_pointer=True):
         if got is None:
             continue
         fill, convex, (ex, ey), (major, minor), ang = got
-        if fill < MIN_FILL or convex < MIN_CONVEX:
+        if fill < MIN_FILL:
             continue
         out.append({'cx': float(ex), 'cy': float(ey), 'major': float(major),
                     'minor': float(minor), 'angle_deg': float(ang),
