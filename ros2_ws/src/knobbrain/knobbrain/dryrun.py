@@ -160,6 +160,13 @@ def main():
     log = run(a)
     assert 'cannot see' in log and len(a.bites) == 2, (len(a.bites), log)
 
+    # and if it cannot see the row BEFORE the first bite, nothing moves at all.
+    # Otherwise the arm grips on the strength of a stale reading and only then
+    # discovers it has no way to check what it did.
+    a = FakeArm(keep=1.0, blind_after=-1)
+    log = run(a)
+    assert 'nothing was moved' in log and a.bites == [], (a.bites, log)
+
     # counterclockwise is the same loop with a sign
     a = FakeArm(keep=1.0)
     a.now['treble'] = 100.0
@@ -180,7 +187,7 @@ def main():
     assert len(a.bites) == dial.MAX_BITES, a.bites
     assert 'gave up' in log, log
 
-    print(f'dryrun: 10 scenarios pass, {dial.MAX_BITES} bite cap holds')
+    print(f'dryrun: 11 scenarios pass, {dial.MAX_BITES} bite cap holds')
     return 0
 
 

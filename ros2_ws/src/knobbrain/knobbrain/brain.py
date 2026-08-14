@@ -189,6 +189,13 @@ class Brain(PresetController):
 
 def turn(b, name, target, say):
     """Converge on the target, and stop for anything that is not converging."""
+    # Read BEFORE committing to a move. Without this a row the camera cannot
+    # currently see still gets one bite, and only then fails the read, so the
+    # arm has gone and gripped something on the strength of a stale number.
+    if not b.measure():
+        say('    cannot see the whole row right now, so nothing was moved.')
+        say('    re-aim until the banner says 8/8, then try again.')
+        return
     if b.tag_drift > TAG_MOVED_M:
         say(screen.box('AMP MOVED', [
             f'tag has shifted {b.tag_drift * 1000:.0f} mm since calibration.',
@@ -287,7 +294,13 @@ def tui(b):
             f'{n} bite{"s" if n != 1 else ""} of {dial.BITE_DEG:.0f}', '',
             'each bite is his macro, unchanged:',
             '  hover -> plunge -> grip -> twist -> release -> untwist -> raise']))
-        if input('    proceed?  [y/n] ').strip().lower() != 'y':
+        # An explicit y, because this is the one gate before the arm moves. But
+        # say so when it is declined: a silent return to the table looks exactly
+        # like the program having ignored you.
+        if input('    proceed?  type y then enter:  ').strip().lower() \
+                not in ('y', 'yes'):
+            say('  cancelled, nothing moved.')
+            input('  [enter]')
             continue
         turn(b, name, deg, say)
         input('  [enter]')
