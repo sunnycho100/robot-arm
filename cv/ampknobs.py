@@ -135,6 +135,46 @@ def _shape(contour):
             (ex, ey), (major, minor), ang, (a1, a2))
 
 
+def _face_affine(k, pad=1.15):
+    """-> (M, Minv, R) mapping this knob's face to a circle of radius R.
+
+    Kept separate from the warp because the DRAWING has to invert exactly the
+    transform the reading used. When it did not, the overlay was the only
+    thing wrong and it looked like the angles were: pointers were measured on
+    the normalised face and then drawn back with a hand-guessed
+    foreshortening, so every line lay off its printed mark while the numbers
+    behind them were correct to a degree.
+    """
+    R = int(round(pad * k['major'] / 2.0))
+    if R < 6:
+        return None, None, 0
+    th = np.deg2rad(k['angle_deg'])
+    c, s_ = np.cos(th), np.sin(th)
+    A = (np.diag([k['major'] / max(k['_a1'], 1e-6),
+                  k['major'] / max(k['_a2'], 1e-6)])
+         @ np.array([[c, s_], [-s_, c]], float))
+    t = np.array([R, R], float) - A @ np.array([k['cx'], k['cy']], float)
+    M = np.hstack([A, t.reshape(2, 1)])
+    return M, cv2.invertAffineTransform(M), R
+
+
+def pointer_segment(k, frac=0.85):
+    """The pointer as two image-space points, centre first.
+
+    Built by placing the line on the NORMALISED face, where the angle was
+    measured, and mapping it back. Anything else has to re-guess the
+    foreshortening and will disagree with the number it is drawing.
+    """
+    M, Minv, R = _face_affine(k)
+    if Minv is None:
+        return None
+    t = np.deg2rad(k['pointer'] - 90.0)      # undo the reporting offset
+    pts = np.array([[R, R, 1.0],
+                    [R + frac * R * np.cos(t), R + frac * R * np.sin(t), 1.0]]).T
+    back = Minv @ pts
+    return ((int(back[0, 0]), int(back[1, 0])), (int(back[0, 1]), int(back[1, 1])))
+
+
 def _circle_crop(bgr, k, pad=1.15):
     """Warp one knob face into a circle. -> (crop, radius, inverse affine).
 
@@ -150,19 +190,10 @@ def _circle_crop(bgr, k, pad=1.15):
     kind of magic number the rest of this file avoids. The ellipse already
     measured the foreshortening; use what it measured.
     """
-    R = int(round(pad * k['major'] / 2.0))
-    if R < 6:
+    M, Minv, R = _face_affine(k, pad)
+    if M is None:
         return None, 0, None
-    th = np.deg2rad(k['angle_deg'])
-    c, s_ = np.cos(th), np.sin(th)
-    # rotate by -angle, then scale each axis up to the long one
-    rot = np.array([[c, s_], [-s_, c]], float)
-    sc = np.diag([k['major'] / max(k['_a1'], 1e-6), k['major'] / max(k['_a2'], 1e-6)])
-    A = sc @ rot
-    t = np.array([R, R], float) - A @ np.array([k['cx'], k['cy']], float)
-    M = np.hstack([A, t.reshape(2, 1)])
-    crop = cv2.warpAffine(bgr, M, (2 * R, 2 * R), flags=cv2.INTER_LINEAR)
-    return crop, R, cv2.invertAffineTransform(M)
+    return cv2.warpAffine(bgr, M, (2 * R, 2 * R), flags=cv2.INTER_LINEAR), R, Minv
 
 
 def _pointer(bgr, k):
@@ -436,13 +467,9 @@ def draw(bgr, knobs):
         c = (int(k['cx']), int(k['cy']))
         cv2.ellipse(img, c, (int(k['major'] / 2), int(k['minor'] / 2)),
                     k['angle_deg'], 0, 360, (0, 235, 0), 2)
-        if k.get('pointer_contrast', 0) >= 2.0:
-            t = np.deg2rad(k['pointer'])
-            fy = k['cy'] - 0.20 * k['minor']
-            r = 0.9 * k['minor'] / 2
-            cv2.line(img, (int(k['cx']), int(fy)),
-                     (int(k['cx'] + r * np.cos(t)),
-                      int(fy + r * np.sin(t) * 0.75)), (255, 60, 220), 2)
+        seg = pointer_segment(k) if k.get('pointer_contrast', 0) >= 2.0 else None
+        if seg:
+            cv2.line(img, seg[0], seg[1], (255, 60, 220), 2)
         cv2.putText(img, f"{i}", (c[0] - 8, c[1] - int(k['minor'] / 2) - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 235, 0), 2, cv2.LINE_AA)
     return img

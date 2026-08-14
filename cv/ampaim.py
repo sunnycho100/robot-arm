@@ -64,13 +64,9 @@ def annotate(frame):
         col = (0, 235, 0) if good else (0, 165, 255)
         cv2.ellipse(frame, c, (int(k['major'] / 2), int(k['minor'] / 2)),
                     k['angle_deg'], 0, 360, col, 2)
-        if good:
-            t = np.deg2rad(k['pointer'])
-            fy = k['cy'] - 0.20 * k['minor']
-            r = 0.9 * k['minor'] / 2
-            cv2.line(frame, (int(k['cx']), int(fy)),
-                     (int(k['cx'] + r * np.cos(t)),
-                      int(fy + r * np.sin(t) * 0.75)), (255, 60, 220), 2)
+        seg = ampknobs.pointer_segment(k) if good else None
+        if seg:
+            cv2.line(frame, seg[0], seg[1], (255, 60, 220), 2)
         # The two numbers that decided it, so a near miss is visible as a near
         # miss rather than as a knob that simply is not there.
         cv2.putText(frame, f"{i} f{k['fill']:.2f} c{k['convexity']:.2f}",
