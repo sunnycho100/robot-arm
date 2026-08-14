@@ -28,6 +28,26 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 WANT = int(sys.argv[2]) if len(sys.argv) > 2 else 8
 EVERY_N = 3
 
+# The amp's panel, left to right. find() already returns knobs in that order.
+NAMES = ['volume', 'treble', 'high mid', 'low mid', 'bass', 'level',
+         'drive', 'gain']
+
+
+def names_of(knobs):
+    """Name the knobs left to right, but only when all of them are there.
+
+    With one missing, every name past the gap slides onto its neighbour, and a
+    knob confidently labelled as the wrong one is worse than a numbered knob.
+
+    Placing them on an even grid instead does not rescue that: this panel is
+    not evenly spaced. The gap from DRIVE to GAIN measures 175 px against a
+    110 px pitch, because the voicing buttons sit between them, so a grid
+    invents a knob there and shifts the whole row anyway.
+    """
+    if len(knobs) != len(NAMES):
+        return [str(i) for i in range(1, len(knobs) + 1)]
+    return list(NAMES)
+
 # Freeze the auto white balance. The C270 re-meters when the arm swings into
 # frame and everything goes yellow; the detector's Otsu threshold rides that
 # out, but the picture is much easier for a human to judge if it holds still.
@@ -57,6 +77,7 @@ def annotate(frame):
     if CACHE['n'] % EVERY_N == 1 or not CACHE['knobs']:
         CACHE['knobs'] = ampknobs.find(frame)
     ks = CACHE['knobs']
+    labels = names_of(ks)
 
     for i, k in enumerate(ks, 1):
         c = (int(k['cx']), int(k['cy']))
@@ -67,11 +88,13 @@ def annotate(frame):
         seg = ampknobs.pointer_segment(k) if good else None
         if seg:
             cv2.line(frame, seg[0], seg[1], (255, 60, 220), 2)
-        # The two numbers that decided it, so a near miss is visible as a near
-        # miss rather than as a knob that simply is not there.
-        cv2.putText(frame, f"{i} f{k['fill']:.2f} c{k['convexity']:.2f}",
-                    (c[0] - 55, c[1] - int(k['minor'] / 2) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
+        # Name on top, then the two numbers that decided it, so a near miss is
+        # visible as a near miss rather than as a knob that simply is not there.
+        top = c[1] - int(k['minor'] / 2) - 10
+        for j, line in enumerate((labels[i - 1],
+                                  f"f{k['fill']:.2f} c{k['convexity']:.2f}")):
+            cv2.putText(frame, line, (c[0] - 55, top - 18 * (1 - j)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
 
     h, w = frame.shape[:2]
     ok = len(ks) == WANT
@@ -85,7 +108,8 @@ def annotate(frame):
 
     hint = ('all of them, and the ellipses sit on the caps' if ok else
             'too few: are any cut off by the frame edge, or covered by the arm? '
-            'a partly hidden knob is dropped on purpose')
+            'a partly hidden knob is dropped on purpose. names assume the '
+            'leftmost one found is volume')
     cv2.putText(frame, hint, (14, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                 (200, 200, 200), 1, cv2.LINE_AA)
     return frame
