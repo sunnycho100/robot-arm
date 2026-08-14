@@ -39,6 +39,13 @@ def names_of(knobs, names):
 class Eyes:
     def __init__(self, device, names, port=8080):
         self.cap = cv2.VideoCapture(device, cv2.CAP_V4L2)   # never the default
+        # MJPG, and BEFORE the size: both cameras sit on one 480M USB 2.0 bus,
+        # and 1280x960 uncompressed is about 24 MB/s, which is the entire
+        # isochronous budget for the bus. The tag camera then cannot get an
+        # allocation and every read it makes returns select() timeout, which
+        # looks like a dead ArUco node and is really this. Compressed, the same
+        # picture costs roughly a tenth of that and both fit.
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)        # backend: it deadlocks
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
         if not self.cap.isOpened():
