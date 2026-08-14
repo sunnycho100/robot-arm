@@ -65,6 +65,18 @@ STAGES = [
      'find, centre, pre-close, descend, turn, verify runs on all three knobs'),
     ('sequence', 'sim', 'sequence.py',
      'several knobs in a row, biting until each arrives despite a slipping grip'),
+    ('dial',     'ros2_ws/src/knobbrain/knobbrain', 'dial.py',
+     'session angles, and bites that converge through slip without overshooting'),
+    ('screen',   'ros2_ws/src/knobbrain/knobbrain', 'screen.py',
+     'the TUI renders inside 80 columns and refuses nonsense commands'),
+    ('cams',     'ros2_ws/src/knobbrain/knobbrain', 'cams.py',
+     'the knob camera is picked by serial, and a swap is named not absorbed'),
+    ('wiring',   'ros2_ws/src/knobbrain/knobbrain', 'wiring.py',
+     'his sequencer is cancelled, his three topics are the only interface, '
+     'and our bite is his macro in his order'),
+    ('dryrun',   'ros2_ws/src/knobbrain/knobbrain', 'dryrun.py',
+     'the real turn loop against a simulated arm: arrives, and stops on a '
+     'slip, an inverted wrist, a moved amp or a blind camera'),
 ]
 
 # Stages needing a model download or torch; skipped unless asked for by name
