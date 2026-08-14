@@ -154,6 +154,19 @@ def _ring_vals(V, cx, cy, r, step=5):
 # consistency filter throws out the dots exactly as it always did.
 CAP_AREA = (150, 20000)
 
+# How much of the ring just outside a blob has to be dark. This asks "is it
+# sitting on a panel", NOT "does it have a black skirt", and the difference
+# only became visible on the amp. A DS-1 has an aluminium cap on a black
+# skirt, so it owns 65 to 93 percent of its surround and a majority test was
+# free. A Fender knob is cream all the way down and its neighbours are 20 px
+# away, so most of what surrounds it is ANOTHER KNOB: measured on all eight,
+# 0.13 to 0.31, and every one was rejected by a 0.50 bar.
+#
+# 0.08 still kills what this test is for. The selftest's decoy is a
+# knob-sized bright disc on a mid-grey field with no dark anywhere near it,
+# and it scores 0.00.
+DARK_ARC_MIN = 0.08
+
 
 def find_knobs(frame, rejects=None):
     """Locate every knob in the frame. Returns {name: {cx, cy, cap_r, skirt_r}}.
@@ -235,9 +248,9 @@ def find_knobs(frame, rejects=None):
         k = len(ring) * 3 // 4
         best = max(sum(ring[(j + m) % len(ring)] for m in range(k))
                    for j in range(len(ring))) / k
-        if best < 0.5:
-            toss(a, f'no black skirt around it (best arc {best:.0%}), '
-                    f'so it is not a knob cap')
+        if best < DARK_ARC_MIN:
+            toss(a, f'nothing dark around it (best arc {best:.0%}, need '
+                    f'{DARK_ARC_MIN:.0%}), so it is not sitting on a panel')
             continue
         found.append({'cx': cx, 'cy': cy, 'cap_r': cap_r,
                       'skirt_r': int(round(cap_r * REACH)),
@@ -266,9 +279,19 @@ def find_knobs(frame, rejects=None):
     # assumes no more than counting did: six knobs cover about 30000 px of
     # panel and eight indicators about 3200, because a knob is the thing you
     # can actually get fingers around.
+    # Knobs on one panel also look ALIKE, not just measure alike. Seen edge on,
+    # the amp's eight caps hold an aspect ratio between 1.11 and 1.29 while the
+    # clutter around them runs 0.52 to 2.36, so shape separates what size alone
+    # leaves behind: cable runs, panel lettering and the bright top of the arm
+    # all survive a size filter and none of them survives this.
     if len(found) > 2:
+        shapes = sorted(f['roundness'] for f in found)
+        mid = shapes[len(shapes) // 2]
+
         def agree(r):
-            return [f for f in found if 0.6 * r <= f['cap_r'] <= 1.7 * r]
+            return [f for f in found
+                    if 0.6 * r <= f['cap_r'] <= 1.7 * r
+                    and 0.7 * mid <= f['roundness'] <= 1.4 * mid]
         best = max((f['cap_r'] for f in found),
                    key=lambda r: sum(g['cap_r'] ** 2 for g in agree(r)))
         keep = agree(best)
