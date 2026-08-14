@@ -57,9 +57,17 @@ class Brain(PresetController):
         self.tag_drift = 0.0
         self.zero = {}              # name -> pointer_rel at calibration
         self.now = {}               # name -> degrees turned this session
+        self.at = {}                # name -> (cx, cy, major) at calibration
         self.target = {}
         self.last = {}
         self.arm = 'PARKED'
+        # Assume every bite delivers what it was asked for, instead of checking.
+        # Off by default and it should stay off: the measured slip on this rig
+        # was +90 commanded against +19 delivered, with the gripper reporting a
+        # clean hold throughout, so the assumed numbers are not a slightly worse
+        # estimate, they are a different story from what the knob did. It exists
+        # because a demo that runs beats a demo waiting on camera framing.
+        self.open_loop = False
 
         saved = dial.load_session()
         self.sign = float(saved.get('sign', 1.0))
@@ -170,21 +178,39 @@ class Brain(PresetController):
         seen = self.eyes.read()
         if not seen:
             return False
-        self.zero = dict(seen)
+        self.zero = {n: k['rel'] for n, k in seen.items()}
+        # Where each knob sits in the image. This is what lets a later read
+        # name a PARTIAL row: match by position instead of by counting along
+        # it. Only valid while the camera holds still, which is also why moving
+        # the camera means calibrating again.
+        self.at = {n: (k['cx'], k['cy'], k['major']) for n, k in seen.items()}
         self.now = {n: 0.0 for n in seen}
         self.last = {}
         dial.save_session({'sign': self.sign, 'zero': self.zero,
                            'stamp': time.strftime('%H:%M')})
         return True
 
-    def measure(self):
-        seen = self.eyes.read()
-        if not seen:
+    def measure(self, need=None):
+        """Update every knob the camera can currently see.
+
+        `need` is the one knob that has to be among them. The rest being hidden
+        by the arm, or off the edge of the frame, is not a reason to refuse: the
+        only knob whose angle matters right now is the one being turned.
+        """
+        if self.open_loop:
+            return True
+        ks = self.eyes.read_raw()
+        if len(ks) < 2:
             return False
-        for n, rel in seen.items():
-            if n in self.zero:
-                self.now[n] = dial.dial(rel, self.zero[n], self.sign)
-        return True
+        got = {}
+        for n, (cx, cy, major) in self.at.items():
+            near = min(ks, key=lambda k: np.hypot(k['cx'] - cx, k['cy'] - cy))
+            if np.hypot(near['cx'] - cx, near['cy'] - cy) < 0.6 * major:
+                got[n] = near['rel']
+        for n, rel in got.items():
+            self.now[n] = dial.dial(rel, self.zero[n], self.sign)
+        self.eyes.note = f'{len(ks)} seen, {len(got)} of {len(self.at)} matched'
+        return (need in got) if need else bool(got)
 
 
 def turn(b, name, target, say):
@@ -192,9 +218,9 @@ def turn(b, name, target, say):
     # Read BEFORE committing to a move. Without this a row the camera cannot
     # currently see still gets one bite, and only then fails the read, so the
     # arm has gone and gripped something on the strength of a stale number.
-    if not b.measure():
-        say('    cannot see the whole row right now, so nothing was moved.')
-        say('    re-aim until the banner says 8/8, then try again.')
+    if not b.measure(need=name):
+        say(f'    cannot see {name} right now, so nothing was moved.')
+        say('    re-aim until it is in frame, then try again.')
         return
     if b.tag_drift > TAG_MOVED_M:
         say(screen.box('AMP MOVED', [
@@ -211,8 +237,17 @@ def turn(b, name, target, say):
         say(f'    bite {taken + 1}   twist {step:+.0f} ...')
         before = b.now[name]
         b.bite(name, step)
-        if not b.measure():
-            say('    cannot see the row after that bite. stopping.')
+        if b.open_loop:
+            # Assumed, not measured. Every check below is about comparing what
+            # was asked with what happened, and open loop has nothing to
+            # compare, so it credits the full bite and carries on.
+            b.now[name] = before + step
+            b.last[name] = step
+            taken += 1
+            say(f'    assumed {b.now[name]:.0f}   (not measured)')
+            continue
+        if not b.measure(need=name):
+            say(f'    cannot see {name} after that bite. stopping.')
             return
         got = b.now[name] - before
         b.last[name] = got
@@ -247,7 +282,8 @@ def tui(b):
             'zero': dial.load_session().get('stamp', '--:--'),
             'amp': 'LOCKED' if b.locked() else 'WAITING',
             'camK': b.eyes.note, 'camT': f'drift {b.tag_drift * 1000:.0f}mm',
-            'arm': b.arm}))
+            'arm': b.arm + ('   OPEN LOOP, numbers ASSUMED' if b.open_loop
+                            else '')}))
         if not b.zero:
             print('  no session zero yet. press  c  to calibrate.')
         try:
@@ -269,6 +305,12 @@ def tui(b):
             continue
         if cmd[0] == 'state':
             b.measure()
+            continue
+        if cmd[0] == 'openloop':
+            b.open_loop = not b.open_loop
+            say('  OPEN LOOP: bites are now assumed to land, not measured.'
+                if b.open_loop else '  back to measuring every bite.')
+            input('  [enter]')
             continue
 
         _, i, deg, multiple = cmd

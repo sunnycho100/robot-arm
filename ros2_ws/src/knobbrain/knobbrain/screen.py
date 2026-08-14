@@ -64,7 +64,7 @@ def render(knobs, status):
           _rule('enter  [knob] [degrees]        e.g.   2 75'),
           _rule('degrees as multiples of {:.0f}:  {}'.format(
               STEP, '  '.join(f'{STEP*i:.0f}' for i in range(1, 7)))),
-          _rule('state  re-read     zero  recalibrate     q  quit'),
+          _rule('state  re-read    zero  recalibrate    open  no-camera mode    q  quit'),
           '/' * W, '']
     return '\n'.join(L)
 
@@ -88,6 +88,8 @@ def parse(line, n=8):
         return ('state',)
     if head in ('zero', 'z', 'c'):
         return ('zero',)
+    if head in ('open', 'openloop'):
+        return ('openloop',)
     if len(parts) != 2:
         return ('error', 'type a knob number and a target, like:  2 75')
     try:
@@ -137,6 +139,7 @@ def _selftest():
     assert parse('banana')[0] == 'error'
     assert parse('2')[0] == 'error'
     assert nearest_multiples(60.0) == (50.0, 75.0)
+    assert parse('open')[0] == 'openloop'
 
     # an unread knob must not render as if it were at zero
     assert '  ??' in render([{'name': 'volume', 'now': None, 'target': None,
@@ -146,7 +149,7 @@ def _selftest():
     odd = render([{'name': 'wobble', 'now': 0.0, 'target': None, 'last': None}], {})
     assert 'wobble' in odd
 
-    print('screen: 16 assertions pass')
+    print('screen: 17 assertions pass')
 
 
 if __name__ == '__main__':

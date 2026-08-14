@@ -98,11 +98,12 @@ class Eyes:
                     (120, 255, 120) if ok else (120, 160, 255), 2, cv2.LINE_AA)
         return frame
 
-    def read(self):
-        """{name: pointer_rel} over FRAMES frames, only the knobs that hold still.
+    def read_raw(self):
+        """Whatever knobs hold still, unnamed, each with its row-relative angle.
 
-        Returns {} rather than a guess when the row is not all there, because a
-        name assigned to the wrong knob is how the arm grips the neighbour.
+        No requirement that the whole row be present: naming is the caller's
+        problem, and after calibration it can be done by position, which works
+        on a partial view.
         """
         frames = []
         while len(frames) < FRAMES:
@@ -112,15 +113,29 @@ class Eyes:
             else:
                 time.sleep(0.05)
         ks = ampknobs.find_stable(frames)       # already sorted left to right
-        if len(ks) != self.want:
-            self.note = f'{len(ks)}/{self.want} knobs, cannot name them'
-            return {}
         self.note = f'{len(ks)}/{self.want} knobs'
+        if len(ks) < 2:
+            return ks                          # no row to measure against
         # find_stable replaces 'pointer' with the circular median across frames
         # but leaves 'pointer_rel' at whatever the middle frame happened to say,
         # so take the row off the median here rather than trusting the stale one.
         row = ampknobs.row_angle(ks)
-        return {n: (k['pointer'] - row) % 360.0 for n, k in zip(self.names, ks)}
+        for k in ks:
+            k['rel'] = (k['pointer'] - row) % 360.0
+        return ks
+
+    def read(self):
+        """{name: knob} for CALIBRATION, which does need the whole row.
+
+        Returns {} rather than a guess when one is missing, because that is the
+        one moment when names come from left-to-right order, and a name landing
+        on the wrong knob is how the arm grips the neighbour.
+        """
+        ks = self.read_raw()
+        if len(ks) != self.want:
+            self.note = f'{len(ks)}/{self.want} knobs, cannot name them'
+            return {}
+        return dict(zip(self.names, ks))
 
     def _handler(eyes_self):
         class H(BaseHTTPRequestHandler):

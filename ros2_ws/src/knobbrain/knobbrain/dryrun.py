@@ -37,7 +37,8 @@ import macro    # noqa: E402
 class FakeArm:
     """A knob that turns by `keep` of whatever it is asked for."""
 
-    def __init__(self, keep=1.0, blind_after=None, drift=0.0):
+    def __init__(self, keep=1.0, blind_after=None, drift=0.0, open_loop=False):
+        self.open_loop = open_loop
         self.now = {'treble': 0.0}
         self.target, self.last = {}, {}
         self.tag_drift = drift
@@ -49,7 +50,9 @@ class FakeArm:
         self.bites.append(deg)
         self.now[name] += deg * self.keep
 
-    def measure(self):
+    def measure(self, need=None):
+        if self.open_loop:
+            return True          # as the real one does: nothing to look at
         return not (self.blind_after is not None
                     and len(self.bites) > self.blind_after)
 
@@ -178,6 +181,15 @@ def main():
     a.now['treble'] = 73.0
     assert 'DONE' in run(a) and a.bites == []
 
+    # open loop: it moves and credits itself, with no camera involved at all.
+    # A blind camera must not stop it, and it must say the numbers are assumed.
+    a = FakeArm(keep=0.0, blind_after=-1, open_loop=True)
+    log = run(a)
+    assert 'assumed' in log and 'not measured' in log, log
+    assert len(a.bites) == 3, a.bites
+    assert a.now['treble'] == sum(a.bites), 'it credits the full bite'
+    assert 'SLIPPING' not in log, 'there is nothing to compare, so no verdict'
+
     # and the cap really does stop a knob that never gets there. 0.3 is chosen
     # to deliver 7.5 degrees a bite: poor, but above the half-tolerance floor
     # that check_bite calls slipping, so this exercises the cap and not the
@@ -187,7 +199,7 @@ def main():
     assert len(a.bites) == dial.MAX_BITES, a.bites
     assert 'gave up' in log, log
 
-    print(f'dryrun: 11 scenarios pass, {dial.MAX_BITES} bite cap holds')
+    print(f'dryrun: 12 scenarios pass, {dial.MAX_BITES} bite cap holds')
     return 0
 
 

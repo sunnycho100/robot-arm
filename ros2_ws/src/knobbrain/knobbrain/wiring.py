@@ -75,15 +75,35 @@ def main():
     # every step type he can emit is handled, so a new one is an error and not
     # a silently skipped move
     do = ast.get_source_segment(src, fns['_do'])
-    for t in ('hover', 'plunge', 'gripper', 'twist'):
-        assert f"'{t}'" in do, f'his {t} step is not handled'
+    for step in ('hover', 'plunge', 'gripper', 'twist'):
+        assert f"'{step}'" in do, f'his {step} step is not handled'
     assert 'raise ValueError' in do, 'an unknown step must be loud'
 
-    # NOTHING of his is copied as a literal. He changed six offsets and added a
-    # per-knob wrist flip between his snapshot and his Pi; a number frozen here
-    # would have swung the wrist the wrong way on four of the eight knobs.
-    for stale in ('1.57', '2.00', '-1.14', '0.6', 'dist lev', 'initial'):
-        assert stale not in src, f'{stale!r} is copied out of his file'
+    # NOTHING of his is copied. He changed six offsets and added a per-knob
+    # wrist flip between his snapshot and his Pi; a number frozen here would
+    # have swung the wrist the wrong way on four of the eight knobs.
+    #
+    # Checked by meaning rather than by digits. A bare substring search for
+    # "0.6" also matches our own knob-matching threshold, which has nothing to
+    # do with his plunge depth, and a test that cries wolf gets deleted.
+    HIS = {1.57, -1.57, 2.0, -1.14, 0.6}
+    for n in ast.walk(t):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant):
+            assert n.value.value not in HIS, \
+                f'module constant {ast.unparse(n.targets[0])} holds one of his ' \
+                f'numbers ({n.value.value}); read it off his macro instead'
+    # And none of his numbers anywhere in the motion path, in any form. Checking
+    # only for a bare argument misses `1.57 if value is None else value`, which
+    # is an IfExp, so walk the whole subtree of the two functions that move the
+    # arm and look at every constant in them.
+    for fname in ('bite', '_do'):
+        for n in ast.walk(fns[fname]):
+            if isinstance(n, ast.Constant) and isinstance(n.value, float):
+                assert n.value not in HIS, \
+                    f'{fname}() contains {n.value}, which is his. It has to ' \
+                    f'come from his macro, or it goes stale when he retunes.'
+    for name in ('dist lev', 'initial'):
+        assert name not in src, f'{name!r} is his, and comes from his macro'
     assert 'macro.blocks' in src, 'his macro is never read'
 
     # the launch file drops his sequencer and keeps the rest
@@ -136,7 +156,7 @@ def main():
     for m in ('brain', 'go'):
         py_compile.compile(str(HERE / f'{m}.py'), doraise=True)
 
-    print('wiring: 24 assertions pass')
+    print("wiring: 26 assertions pass")
     return 0
 
 
